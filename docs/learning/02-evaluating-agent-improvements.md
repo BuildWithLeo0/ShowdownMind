@@ -44,6 +44,11 @@ uv run --env-file .env showdown-mind evaluate \
 Each evaluation records its Git commit and dirty-worktree state. Commit before
 running a real benchmark so the code behind a result can be recovered later.
 
+The runner also separates "the battles finished" from "the data is trustworthy."
+Fallback-heavy or error-heavy runs are marked invalid, and severe failures stop
+the remaining matrix to avoid wasting API calls. An invalid report is useful
+for debugging but cannot be used in `compare`.
+
 ## 3. Compare reports
 
 ```bash

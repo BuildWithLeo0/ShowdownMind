@@ -32,6 +32,11 @@ Before the first battle, a small model connectivity check validates the native
 tool-call contract. The full matrix then runs sequentially with one concurrent
 battle, keeping provider load and experiment behavior predictable.
 
+Passing preflight is not enough because a provider can fail during a long
+matrix. After every opponent/repeat batch, a hard cost-protection gate stops
+the remaining live calls when fallback rate exceeds 20%, decision-error rate
+exceeds 30%, or tool-call/rationale coverage falls below 70%.
+
 ## Artifacts
 
 An evaluation directory contains:
@@ -98,6 +103,20 @@ The conclusion is:
 Reliability and efficiency deltas are reported as trade-offs, not folded into
 an arbitrary single score. The comparison does not claim causality when model,
 prompt, Git commit, or other declared configuration differs.
+
+## Research-quality gate
+
+Execution completion and research validity are separate. A completed report is
+marked `valid` only when:
+
+- fallback rate is at most 5%;
+- decision-error rate is at most 10%;
+- native tool-call coverage is at least 95%;
+- public-rationale coverage is at least 95%.
+
+Invalid reports preserve their artifacts and metrics for diagnosis but cannot
+be passed to `compare`. This prevents provider outages or fallback-heavy games
+from being mistaken for evidence about Agent strength.
 
 ## Failures and testing
 

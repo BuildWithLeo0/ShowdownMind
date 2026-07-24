@@ -208,6 +208,12 @@ The evaluation directory contains every underlying run plus `report.json` and
 opponent, retries, fallbacks, decision errors, tool-call and rationale
 coverage, confidence, tokens, and model latency.
 
+Research validity is stricter than merely finishing battles. Reports require
+fallback rate ≤5%, decision-error rate ≤10%, and tool-call/rationale coverage
+≥95% before `compare` accepts them. A severe per-run quality failure stops the
+remaining live matrix early to protect API cost while preserving an incomplete
+diagnostic report.
+
 Compare a completed candidate against a completed baseline:
 
 ```bash

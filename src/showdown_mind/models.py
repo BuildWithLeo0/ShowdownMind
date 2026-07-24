@@ -91,7 +91,11 @@ class DeterministicModelClient:
                 "short_rationale": "Choose the legal move with the highest base power.",
             }
         )
-        return ModelResponse(content, self.model_id)
+        return ModelResponse(
+            content,
+            self.model_id,
+            tool_call_id="deterministic-tool-call",
+        )
 
 
 class ModelConfigurationError(ValueError):

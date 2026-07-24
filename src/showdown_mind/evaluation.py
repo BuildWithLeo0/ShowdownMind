@@ -21,6 +21,18 @@ COMPARISON_SCHEMA_VERSION = "1.0"
 DEFAULT_OPPONENTS = ("random", "max-base-power", "simple-heuristics")
 MIN_COMPARISON_BATTLES = 20
 BOOTSTRAP_ITERATIONS = 5_000
+FINAL_QUALITY_THRESHOLDS = {
+    "max_fallback_rate": 0.05,
+    "max_decision_error_rate": 0.10,
+    "min_tool_call_coverage": 0.95,
+    "min_rationale_coverage": 0.95,
+}
+HARD_STOP_THRESHOLDS = {
+    "max_fallback_rate": 0.20,
+    "max_decision_error_rate": 0.30,
+    "min_tool_call_coverage": 0.70,
+    "min_rationale_coverage": 0.70,
+}
 
 BattleRunner = Callable[..., Awaitable[AgentSmokeResult]]
 ConnectivityChecker = Callable[..., Awaitable[ModelCheckResult]]
@@ -28,6 +40,10 @@ ConnectivityChecker = Callable[..., Awaitable[ModelCheckResult]]
 
 class EvaluationError(RuntimeError):
     """Raised when an evaluation cannot produce a valid complete report."""
+
+
+class EvaluationQualityError(EvaluationError):
+    """Raised when a run crosses the live cost-protection quality gate."""
 
 
 @dataclass(frozen=True)
@@ -39,6 +55,7 @@ class EvaluationPlan:
     repeats: int = 1
     prompt_format: str = "pruned"
     run_timeout_seconds: float | None = None
+    stop_on_quality_failure: bool = True
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -86,6 +103,9 @@ class EvaluationPlan:
             "total_battles": self.total_battles,
             "prompt_format": f"{self.prompt_format}-v1",
             "run_timeout_seconds": self.effective_run_timeout_seconds,
+            "stop_on_quality_failure": self.stop_on_quality_failure,
+            "quality_thresholds": FINAL_QUALITY_THRESHOLDS,
+            "hard_stop_thresholds": HARD_STOP_THRESHOLDS,
         }
 
     def preview(self) -> dict[str, Any]:
@@ -145,14 +165,23 @@ async def run_evaluation(
                     timeout_seconds=plan.effective_run_timeout_seconds,
                     prompt_format=plan.prompt_format,
                 )
-                runs.append(
-                    _completed_run(
-                        opponent=opponent,
-                        repeat=repeat,
-                        result=result,
-                        decision_log=decision_log,
-                    )
+                completed_run = _completed_run(
+                    opponent=opponent,
+                    repeat=repeat,
+                    result=result,
+                    decision_log=decision_log,
                 )
+                runs.append(completed_run)
+                hard_quality = assess_quality(
+                    aggregate_runs([completed_run]),
+                    thresholds=HARD_STOP_THRESHOLDS,
+                )
+                completed_run["quality"] = hard_quality
+                if plan.stop_on_quality_failure and hard_quality["status"] == "invalid":
+                    details = "; ".join(hard_quality["violations"])
+                    raise EvaluationQualityError(
+                        f"run {stem} crossed the quality stop gate: {details}"
+                    )
     except Exception as exc:
         safe_message = redact_secrets(str(exc))[:1000]
         report = _evaluation_report(
@@ -295,6 +324,7 @@ def _evaluation_report(
 ) -> dict[str, Any]:
     overall = aggregate_runs(runs)
     preflight_tokens = int((preflight or {}).get("total_tokens", 0))
+    quality = assess_quality(overall)
     report = {
         "schema_version": EVALUATION_SCHEMA_VERSION,
         "status": status,
@@ -312,6 +342,7 @@ def _evaluation_report(
         "preflight": preflight,
         "runs": runs,
         "overall": overall,
+        "quality": quality,
         "cost_accounting": {
             "battle_total_tokens": overall["total_tokens"],
             "preflight_total_tokens": preflight_tokens,
@@ -399,6 +430,56 @@ def aggregate_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def assess_quality(
+    metrics: dict[str, Any],
+    *,
+    thresholds: dict[str, float] = FINAL_QUALITY_THRESHOLDS,
+) -> dict[str, Any]:
+    decisions = int(metrics.get("decisions", 0))
+    if decisions == 0:
+        return {
+            "status": "pending",
+            "thresholds": dict(thresholds),
+            "violations": [],
+        }
+    checks = (
+        (
+            "fallback_rate",
+            float(metrics["fallback_rate"]),
+            "<=",
+            thresholds["max_fallback_rate"],
+        ),
+        (
+            "decision_error_rate",
+            float(metrics["decision_error_rate"]),
+            "<=",
+            thresholds["max_decision_error_rate"],
+        ),
+        (
+            "tool_call_coverage",
+            float(metrics["tool_call_coverage"]),
+            ">=",
+            thresholds["min_tool_call_coverage"],
+        ),
+        (
+            "rationale_coverage",
+            float(metrics["rationale_coverage"]),
+            ">=",
+            thresholds["min_rationale_coverage"],
+        ),
+    )
+    violations = []
+    for name, actual, operator, expected in checks:
+        failed = actual > expected if operator == "<=" else actual < expected
+        if failed:
+            violations.append(f"{name}={actual:.2%} must be {operator} {expected:.2%}")
+    return {
+        "status": "invalid" if violations else "valid",
+        "thresholds": dict(thresholds),
+        "violations": violations,
+    }
+
+
 def wilson_interval(successes: float, trials: int) -> list[float] | None:
     if trials == 0:
         return None
@@ -451,6 +532,10 @@ def build_comparison(
         raise ValueError("evaluation battle formats do not match")
     if baseline_opponents != candidate_opponents:
         raise ValueError("evaluation opponent sets do not match")
+    for label, report in (("baseline", baseline), ("candidate", candidate)):
+        quality = report.get("quality", {})
+        if quality.get("status") != "valid":
+            raise ValueError(f"{label} evaluation quality is not valid")
 
     bootstrap = _stratified_bootstrap(
         baseline,
@@ -616,6 +701,8 @@ def _read_complete_report(path: Path) -> dict[str, Any]:
         raise ValueError(f"unsupported evaluation report schema: {path}")
     if value.get("status") != "complete":
         raise ValueError(f"evaluation report is not complete: {path}")
+    if value.get("quality", {}).get("status") != "valid":
+        raise ValueError(f"evaluation report quality is not valid: {path}")
     value["_source_path"] = str(path)
     return value
 
@@ -634,6 +721,7 @@ def render_evaluation_markdown(report: dict[str, Any]) -> str:
         f"- Model: `{report['provenance']['model_id']}`",
         f"- Git commit: `{report['provenance']['git_commit']}`",
         f"- Battles: {overall['battles']}",
+        f"- Research quality: `{report['quality']['status']}`",
         "",
         "## Outcomes",
         "",
@@ -678,6 +766,9 @@ def render_evaluation_markdown(report: dict[str, Any]) -> str:
                 f"`{report['failure']['error_type']}`: {report['failure']['message']}",
             ]
         )
+    if report["quality"]["violations"]:
+        lines.extend(["", "## Quality violations", ""])
+        lines.extend(f"- {violation}" for violation in report["quality"]["violations"])
     return "\n".join(lines) + "\n"
 
 

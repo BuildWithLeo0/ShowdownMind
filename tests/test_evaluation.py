@@ -8,6 +8,7 @@ from showdown_mind.evaluation import (
     EvaluationError,
     EvaluationPlan,
     aggregate_runs,
+    assess_quality,
     build_comparison,
     compare_evaluation_reports,
     run_evaluation,
@@ -99,6 +100,7 @@ def report(name: str, outcomes: list[str], opponent: str = "random") -> dict:
             "git_commit": "abc",
             "git_dirty": False,
         },
+        "quality": {"status": "valid", "violations": []},
         "runs": [run],
         "overall": aggregate_runs([run]),
         "by_opponent": {opponent: aggregate_runs([run])},
@@ -239,6 +241,7 @@ async def test_runs_matrix_and_writes_reports(tmp_path) -> None:
     )
 
     assert result["status"] == "complete"
+    assert result["quality"]["status"] == "valid"
     assert result["overall"]["battles"] == 4
     assert result["cost_accounting"]["evaluation_total_tokens"] == 62
     assert len(result["runs"]) == 2
@@ -278,6 +281,102 @@ async def test_failed_preflight_writes_incomplete_report(tmp_path) -> None:
     assert "abcdefghijk" not in json.dumps(saved)
 
 
+@pytest.mark.asyncio
+async def test_hard_quality_gate_stops_before_next_opponent(tmp_path) -> None:
+    class FakeClient:
+        model_id = "fake-model"
+
+    async def fake_check(*args, **kwargs):
+        return ModelCheckResult(
+            model_id="fake-model",
+            prompt_format="pruned-v1",
+            model_input_characters=10,
+            action_id="move:tackle",
+            confidence=0.8,
+            reason_codes=("DAMAGE",),
+            short_rationale="Use reliable damage.",
+            tool_call_id="call-check",
+            attempts=1,
+            input_tokens=1,
+            output_tokens=1,
+            total_tokens=2,
+        )
+
+    opponents_run = []
+
+    async def fallback_heavy_runner(*args, **kwargs):
+        opponents_run.append(kwargs["opponent_name"])
+        path = kwargs["decision_log"]
+        records = [
+            {
+                **decision_record(
+                    attempts=2,
+                    fallback=True,
+                    errors=["ModelCallError: provider unavailable"],
+                ),
+                "tool_call_ids": [],
+            }
+            for _ in range(5)
+        ]
+        write_decisions(path, records)
+        return AgentSmokeResult(
+            battle_format="gen9randombattle",
+            prompt_format="pruned-v1",
+            opponent=kwargs["opponent_name"],
+            requested_battles=1,
+            finished_battles=1,
+            agent_wins=1,
+            opponent_wins=0,
+            draws=0,
+            decisions=5,
+            model_calls=10,
+            fallbacks=5,
+            input_tokens=0,
+            output_tokens=0,
+            total_tokens=0,
+            model_input_characters=10,
+            elapsed_seconds=1.0,
+            decision_log=str(path),
+            manifest_path=str(path.with_suffix(".manifest.json")),
+            summary_path=str(path.with_suffix(".summary.json")),
+            failure_path=str(path.with_suffix(".failure.json")),
+        )
+
+    output = tmp_path / "quality-stop"
+    plan = EvaluationPlan(
+        name="quality-stop",
+        output_dir=output,
+        opponents=("random", "max-base-power"),
+        battles_per_opponent=1,
+    )
+
+    with pytest.raises(EvaluationError, match="quality stop gate"):
+        await run_evaluation(
+            FakeClient(),
+            plan,
+            battle_runner=fallback_heavy_runner,
+            connectivity_checker=fake_check,
+        )
+
+    assert opponents_run == ["random"]
+    saved = json.loads((output / "report.json").read_text())
+    assert saved["status"] == "incomplete"
+    assert saved["quality"]["status"] == "invalid"
+    assert len(saved["runs"]) == 1
+
+
+def test_quality_gate_rejects_fallback_heavy_results() -> None:
+    metrics = aggregate_runs([run_entry("random", ["win"] * 3)])
+    metrics["fallback_rate"] = 0.25
+    metrics["decision_error_rate"] = 0.4
+    metrics["tool_call_coverage"] = 0.6
+
+    quality = assess_quality(metrics)
+
+    assert quality["status"] == "invalid"
+    assert len(quality["violations"]) == 3
+
+
 def test_comparison_detects_clear_improvement() -> None:
     baseline = report("v0", ["loss"] * 30)
     candidate = report("v1", ["win"] * 30)
@@ -308,6 +407,19 @@ def test_comparison_requires_matching_opponent_sets() -> None:
         build_comparison(
             report("v0", ["loss"] * 20, opponent="random"),
             report("v1", ["win"] * 20, opponent="max-base-power"),
+            bootstrap_iterations=200,
+        )
+
+
+def test_comparison_rejects_invalid_quality_report() -> None:
+    baseline = report("v0", ["loss"] * 20)
+    candidate = report("v1", ["win"] * 20)
+    candidate["quality"] = {"status": "invalid", "violations": ["fallbacks"]}
+
+    with pytest.raises(ValueError, match="quality is not valid"):
+        build_comparison(
+            baseline,
+            candidate,
             bootstrap_iterations=200,
         )
 
