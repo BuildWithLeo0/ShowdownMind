@@ -3,7 +3,7 @@
 ShowdownMind is a research project for building and evaluating an LLM agent that
 plays Pokémon Showdown without access to hidden opponent information.
 
-The project currently has two completed foundations:
+The project currently has these completed foundations:
 
 1. run a pinned Pokémon Showdown server locally;
 2. connect with `poke-env`;
@@ -145,6 +145,22 @@ On repeated live connectivity checks it used 214 provider-reported input
 tokens, compared with 275 for `full-v1`. `compact-v1` used fewer characters but
 more reported tokens on this provider, so it is not the default.
 
+### Experiment files
+
+Every Agent run uses a new decision-log path and writes related files beside it:
+
+```text
+run.jsonl          what the Agent saw and chose on every turn
+run.manifest.json  battle, model, prompt, and software configuration
+run.summary.json   result, timing, fallback count, and token usage
+run.failure.json   sanitized error details, only when the run fails
+```
+
+These files make two Agent versions comparable later. ShowdownMind refuses to
+reuse an existing artifact path so separate experiments cannot be mixed
+accidentally. API keys, request headers, raw environment variables, and hidden
+opponent state are never written to the manifest.
+
 ## Tests
 
 ```bash
@@ -161,3 +177,5 @@ The design is documented in the
 [plain-language plan](docs/plans/2026-07-24-pokemon-showdown-agent-design.md)
 and the
 [technical plan](docs/plans/2026-07-24-pokemon-showdown-agent-technical-design.md).
+Experiment provenance is described in the
+[artifact design](docs/plans/2026-07-24-experiment-artifacts-design.md).

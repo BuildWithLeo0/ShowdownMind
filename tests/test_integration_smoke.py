@@ -39,3 +39,9 @@ async def test_policy_agent_finishes_and_logs_a_local_battle(tmp_path) -> None:
     assert result.decisions > 0
     assert result.fallbacks == 0
     assert decision_log.read_text(encoding="utf-8").strip()
+    assert result.manifest_path.endswith(".manifest.json")
+    assert result.summary_path.endswith(".summary.json")
+    assert result.failure_path.endswith(".failure.json")
+    assert (tmp_path / "agent.manifest.json").is_file()
+    assert (tmp_path / "agent.summary.json").is_file()
+    assert not (tmp_path / "agent.failure.json").exists()

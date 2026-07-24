@@ -23,6 +23,9 @@ def smoke_result() -> AgentSmokeResult:
         prompt_format="compact",
         elapsed_seconds=0.1,
         decision_log="test.jsonl",
+        manifest_path="test.manifest.json",
+        summary_path="test.summary.json",
+        failure_path="test.failure.json",
     )
 
 
