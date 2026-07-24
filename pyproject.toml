@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "showdown-mind"
+version = "0.1.0"
+description = "A reproducible research harness for Pokémon Showdown LLM agents"
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+  "poke-env==0.15.0",
+]
+
+[project.scripts]
+showdown-mind = "showdown_mind.cli:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.25,<1",
+  "pytest-cov>=6,<7",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/showdown_mind"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+markers = [
+  "integration: requires a local Pokémon Showdown server",
+]
