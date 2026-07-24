@@ -16,6 +16,7 @@ DEFAULT_MODEL = "gpt-5.6-luna"
 API_KEY_ENV = "SHOWDOWN_MIND_API_KEY"
 BASE_URL_ENV = "SHOWDOWN_MIND_BASE_URL"
 MODEL_ENV = "SHOWDOWN_MIND_MODEL"
+THINKING_ENV = "SHOWDOWN_MIND_THINKING"
 ACTION_TOOL_NAME = "choose_battle_action"
 
 
@@ -111,16 +112,22 @@ class OpenAICompatibleModelClient:
         api_key: str,
         base_url: str,
         model: str,
+        thinking_mode: str | None = None,
         client: Any | None = None,
     ):
         if not api_key:
             raise ModelConfigurationError("API key must not be empty")
         if not model:
             raise ModelConfigurationError("model must not be empty")
+        if thinking_mode not in {None, "enabled", "disabled"}:
+            raise ModelConfigurationError(
+                "thinking_mode must be enabled, disabled, or unset"
+            )
         _validate_base_url(base_url)
 
         self.model_id = model
         self.base_url = base_url.rstrip("/")
+        self.thinking_mode = thinking_mode
         self._client = client or AsyncOpenAI(
             api_key=api_key,
             base_url=self.base_url,
@@ -128,6 +135,11 @@ class OpenAICompatibleModelClient:
         )
 
     async def complete(self, request: ModelRequest) -> ModelResponse:
+        extra_body = (
+            {"thinking": {"type": self.thinking_mode}}
+            if self.thinking_mode is not None
+            else None
+        )
         try:
             completion = await self._client.chat.completions.create(
                 model=self.model_id,
@@ -151,6 +163,7 @@ class OpenAICompatibleModelClient:
                     "function": {"name": request.tool.name},
                 },
                 parallel_tool_calls=False,
+                **({"extra_body": extra_body} if extra_body is not None else {}),
             )
         except Exception as exc:
             raise ModelCallError(f"{type(exc).__name__}: {exc}") from exc
@@ -208,6 +221,7 @@ def live_model_client_from_env(
         api_key=api_key,
         base_url=source.get(BASE_URL_ENV, DEFAULT_BASE_URL).strip(),
         model=source.get(MODEL_ENV, DEFAULT_MODEL).strip(),
+        thinking_mode=source.get(THINKING_ENV, "").strip() or None,
     )
 
 

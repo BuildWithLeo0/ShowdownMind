@@ -93,6 +93,7 @@ async def test_openai_compatible_client_maps_request_and_usage() -> None:
     assert "response_format" not in request
     assert request["messages"][0]["role"] == "system"
     assert request["parallel_tool_calls"] is False
+    assert "extra_body" not in request
     assert request["tool_choice"]["function"]["name"] == "choose_battle_action"
     assert request["tools"][0]["function"]["strict"] is True
     assert response.content == '{"action_id":"move:thunderbolt"}'
@@ -100,6 +101,29 @@ async def test_openai_compatible_client_maps_request_and_usage() -> None:
     assert response.tool_call_id == "call-test"
     assert response.usage is not None
     assert response.usage.total_tokens == 120
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_client_can_disable_provider_thinking() -> None:
+    sdk_client = fake_sdk_client()
+    client = OpenAICompatibleModelClient(
+        api_key="test-key",
+        base_url="https://api.deepseek.com",
+        model="deepseek-v4-flash",
+        thinking_mode="disabled",
+        client=sdk_client,
+    )
+
+    await client.complete(
+        ModelRequest(
+            system_prompt="Call the tool.",
+            user_prompt="{}",
+            tool=battle_tool(),
+        )
+    )
+
+    request = sdk_client.chat.completions.create.await_args.kwargs
+    assert request["extra_body"] == {"thinking": {"type": "disabled"}}
 
 
 @pytest.mark.asyncio
@@ -210,4 +234,14 @@ def test_remote_base_url_requires_https() -> None:
             api_key="test-key",
             base_url="http://provider.example/v1",
             model="gpt-5.6-luna",
+        )
+
+
+def test_rejects_unknown_thinking_mode() -> None:
+    with pytest.raises(ModelConfigurationError, match="thinking_mode"):
+        OpenAICompatibleModelClient(
+            api_key="test-key",
+            base_url="https://provider.example/v1",
+            model="test-model",
+            thinking_mode="sometimes",
         )

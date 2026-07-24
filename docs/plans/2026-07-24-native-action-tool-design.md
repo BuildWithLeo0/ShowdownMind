@@ -66,3 +66,9 @@ OpenAI Python SDK shape:
 
 A live `model-check` request must pass against the configured
 `gpt-5.6-luna` endpoint before the migration is considered complete.
+
+Provider-specific thinking configuration is explicit rather than inferred from
+the URL. `SHOWDOWN_MIND_THINKING=disabled` adds
+`{"thinking":{"type":"disabled"}}` to the request and is recorded in the run
+manifest. This supports DeepSeek V4's forced function calling without weakening
+the named `tool_choice` contract for every provider.

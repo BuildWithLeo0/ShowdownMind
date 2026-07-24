@@ -33,6 +33,7 @@ def test_manifest_sanitizes_provider_url_and_excludes_credentials(tmp_path) -> N
     model = SimpleNamespace(
         model_id="test-model",
         base_url="https://user:password@provider.example:8443/v1?api_key=secret",
+        thinking_mode="disabled",
     )
 
     writer.assert_new_run()
@@ -41,6 +42,7 @@ def test_manifest_sanitizes_provider_url_and_excludes_credentials(tmp_path) -> N
     encoded = writer.paths.manifest.read_text(encoding="utf-8")
     manifest = json.loads(encoded)
     assert manifest["model"]["base_url"] == "https://provider.example:8443/v1"
+    assert manifest["model"]["thinking_mode"] == "disabled"
     assert "password" not in encoded
     assert "api_key" not in encoded
     assert "secret" not in encoded

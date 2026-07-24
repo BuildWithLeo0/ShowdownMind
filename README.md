@@ -98,6 +98,7 @@ so it does not overwrite an official OpenAI configuration:
 SHOWDOWN_MIND_API_KEY=replace-with-your-api-key
 SHOWDOWN_MIND_BASE_URL=https://www.codexapis.com/v1
 SHOWDOWN_MIND_MODEL=gpt-5.6-luna
+SHOWDOWN_MIND_THINKING=
 ```
 
 Verify the provider, credentials, model name, and native tool-call contract with
@@ -135,6 +136,19 @@ choose_battle_action(
 required public sentence capped at 240 characters, not private chain-of-thought.
 The program validates every argument again before resolving the ID into a real
 `poke-env` battle order.
+
+For the official DeepSeek V4 API, use:
+
+```dotenv
+SHOWDOWN_MIND_BASE_URL=https://api.deepseek.com
+SHOWDOWN_MIND_MODEL=deepseek-v4-flash
+SHOWDOWN_MIND_THINKING=disabled
+```
+
+DeepSeek V4 enables thinking mode by default, but its thinking mode does not
+accept ShowdownMind's forced named `tool_choice`. The explicit `disabled` value
+is recorded in experiment manifests; leaving the variable empty preserves the
+provider's default behavior.
 
 ### Choose and benchmark the model input
 

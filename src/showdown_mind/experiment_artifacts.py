@@ -84,6 +84,7 @@ class ExperimentArtifactWriter:
                 "base_url": _sanitize_provider_url(
                     getattr(model_client, "base_url", None)
                 ),
+                "thinking_mode": getattr(model_client, "thinking_mode", None),
             },
             "software": {
                 "showdown_mind_git_commit": git_commit,
