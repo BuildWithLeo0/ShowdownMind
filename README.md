@@ -9,8 +9,9 @@ The project currently has these completed foundations:
 2. connect with `poke-env`;
 3. run built-in baseline players;
 4. give a Policy-first agent a whitelist-only battle snapshot and legal actions;
-5. validate one model decision, allow one repair, and fall back safely;
-6. record every visible snapshot, model response, action, and fallback in JSONL.
+5. force one native `choose_battle_action` tool call with a short public reason;
+6. validate the tool arguments, allow one repair, and fall back safely;
+7. record every visible snapshot, tool call, action, and fallback in JSONL.
 
 The current version also supports a real OpenAI-compatible model endpoint.
 Belief tracking, damage tools, and planning stay separate so their effects can
@@ -70,8 +71,8 @@ This command tests the complete Agent path against a built-in opponent:
 ```text
 visible battle state
   -> legal action catalog
-  -> model interface
-  -> output validation
+  -> forced choose_battle_action tool
+  -> argument and whitelist validation
   -> Showdown action
   -> per-turn JSONL log
 ```
@@ -99,7 +100,7 @@ SHOWDOWN_MIND_BASE_URL=https://www.codexapis.com/v1
 SHOWDOWN_MIND_MODEL=gpt-5.6-luna
 ```
 
-Verify the provider, credentials, model name, and JSON decision contract with
+Verify the provider, credentials, model name, and native tool-call contract with
 one small request:
 
 ```bash
@@ -116,8 +117,24 @@ uv run --env-file .env showdown-mind llm-smoke \
 
 Live battles default to a 300-second batch timeout because each turn makes a
 network request. Override it with `--battle-timeout`. The final result reports
-model calls and input, output, and total tokens; per-turn response IDs and usage
-are stored in the JSONL decision log.
+model calls and input, output, and total tokens; per-turn response IDs, native
+tool-call IDs, short rationales, and usage are stored in the JSONL decision log.
+
+The model must call:
+
+```text
+choose_battle_action(
+  action_id,
+  confidence,
+  reason_codes,
+  short_rationale
+)
+```
+
+`action_id` is restricted to the current legal-action enum. The rationale is a
+required public sentence capped at 240 characters, not private chain-of-thought.
+The program validates every argument again before resolving the ID into a real
+`poke-env` battle order.
 
 ### Choose and benchmark the model input
 
@@ -187,7 +204,8 @@ viewer, or `--battle-id` when one JSONL file contains several battles.
 
 The viewer deliberately excludes raw model responses, environment variables,
 credentials, and hidden opponent information. It shows an auditable decision
-trace, not hidden chain-of-thought.
+trace, not hidden chain-of-thought. Future records also show the native tool
+name and provider tool-call ID in **执行记录**.
 
 ## Learn the Agent loop
 
@@ -218,3 +236,5 @@ The native replay interface is described in the
 [viewer design](docs/plans/2026-07-24-replay-decision-viewer-design.md).
 Its protocol-step synchronization is described in the
 [replay sync design](docs/plans/2026-07-24-replay-sync-design.md).
+The model action boundary is described in the
+[native action tool design](docs/plans/2026-07-24-native-action-tool-design.md).

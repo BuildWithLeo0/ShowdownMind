@@ -93,6 +93,7 @@ class PolicyResult:
     raw_responses: tuple[str, ...]
     model_ids: tuple[str, ...]
     response_ids: tuple[str, ...]
+    tool_call_ids: tuple[str, ...]
     usages: tuple[TokenUsage, ...]
     errors: tuple[str, ...]
     elapsed_seconds: float
@@ -120,6 +121,8 @@ class DecisionRecord:
     policy_input_characters: int = 0
     policy_input: dict[str, Any] = field(default_factory=dict)
     response_ids: tuple[str, ...] = ()
+    tool_name: str = ""
+    tool_call_ids: tuple[str, ...] = ()
     usages: tuple[TokenUsage, ...] = ()
     confidence: float | None = None
     reason_codes: tuple[str, ...] = ()

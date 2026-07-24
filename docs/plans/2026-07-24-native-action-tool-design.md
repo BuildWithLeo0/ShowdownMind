@@ -50,8 +50,8 @@ each successful transport response. The viewer shows that the decision came
 through `choose_battle_action`, displays the short rationale and confidence,
 and includes tool-call IDs in the execution trace.
 
-Raw provider responses remain in local JSONL logs for research auditing but are
-not embedded into the standalone viewer.
+Raw tool-argument strings remain in local JSONL logs for research auditing but
+are not embedded into the standalone viewer.
 
 ## Compatibility
 

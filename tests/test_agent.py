@@ -68,7 +68,18 @@ def player_without_network(policy: SingleCallPolicy) -> ResearchPlayer:
 
 @pytest.mark.asyncio
 async def test_duplicate_request_reuses_the_first_decision() -> None:
-    client = ScriptedModelClient(['{"action_id": "move:tackle"}'])
+    client = ScriptedModelClient(
+        [
+            json.dumps(
+                {
+                    "action_id": "move:tackle",
+                    "confidence": 0.8,
+                    "reason_codes": ["DAMAGE"],
+                    "short_rationale": "Use the only legal damage option.",
+                }
+            )
+        ]
+    )
     player = player_without_network(SingleCallPolicy(client))
     battle = fake_battle()
 
@@ -104,6 +115,8 @@ async def test_invalid_model_output_uses_logged_deterministic_fallback() -> None
     assert player.decision_records[0].fallback_used
     assert player.decision_records[0].attempts == 2
     assert player.decision_records[0].elapsed_seconds >= 0
+    assert player.decision_records[0].reason_codes == ("FALLBACK",)
+    assert player.decision_records[0].short_rationale
     canonical_snapshot = json.dumps(
         player.decision_records[0].snapshot,
         ensure_ascii=False,

@@ -16,12 +16,22 @@ DEFAULT_MODEL = "gpt-5.6-luna"
 API_KEY_ENV = "SHOWDOWN_MIND_API_KEY"
 BASE_URL_ENV = "SHOWDOWN_MIND_BASE_URL"
 MODEL_ENV = "SHOWDOWN_MIND_MODEL"
+ACTION_TOOL_NAME = "choose_battle_action"
+
+
+@dataclass(frozen=True)
+class ModelTool:
+    name: str
+    description: str
+    parameters: dict[str, Any]
+    strict: bool = True
 
 
 @dataclass(frozen=True)
 class ModelRequest:
     system_prompt: str
     user_prompt: str
+    tool: ModelTool
 
 
 @dataclass(frozen=True)
@@ -29,6 +39,7 @@ class ModelResponse:
     content: str
     model_id: str
     response_id: str | None = None
+    tool_call_id: str | None = None
     usage: TokenUsage | None = None
 
 
@@ -76,8 +87,8 @@ class DeterministicModelClient:
             {
                 "action_id": selected["action_id"],
                 "confidence": 1.0,
-                "reason_codes": ["SMOKE_TEST"],
-                "short_rationale": "Deterministic model boundary validation.",
+                "reason_codes": ["DAMAGE"],
+                "short_rationale": "Choose the legal move with the highest base power.",
             }
         )
         return ModelResponse(content, self.model_id)
@@ -120,16 +131,46 @@ class OpenAICompatibleModelClient:
                     {"role": "system", "content": request.system_prompt},
                     {"role": "user", "content": request.user_prompt},
                 ],
-                response_format={"type": "json_object"},
+                tools=[
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": request.tool.name,
+                            "description": request.tool.description,
+                            "parameters": request.tool.parameters,
+                            "strict": request.tool.strict,
+                        },
+                    }
+                ],
+                tool_choice={
+                    "type": "function",
+                    "function": {"name": request.tool.name},
+                },
+                parallel_tool_calls=False,
             )
         except Exception as exc:
             raise ModelCallError(f"{type(exc).__name__}: {exc}") from exc
         if not completion.choices:
             raise ModelCallError("Model response contained no choices")
 
-        content = completion.choices[0].message.content
-        if not isinstance(content, str) or not content.strip():
-            raise ModelCallError("Model response contained no text")
+        tool_calls = completion.choices[0].message.tool_calls or []
+        if len(tool_calls) != 1:
+            raise ModelCallError(
+                "Model response must contain exactly one native tool call"
+            )
+        tool_call = tool_calls[0]
+        if tool_call.type != "function":
+            raise ModelCallError("Model response tool call must have type function")
+        if tool_call.function.name != request.tool.name:
+            raise ModelCallError(
+                "Model called unexpected tool "
+                f"{tool_call.function.name!r}; expected {request.tool.name!r}"
+            )
+        arguments = tool_call.function.arguments
+        if not isinstance(arguments, str) or not arguments.strip():
+            raise ModelCallError("Model tool call contained no arguments")
+        if not isinstance(tool_call.id, str) or not tool_call.id.strip():
+            raise ModelCallError("Model tool call contained no call ID")
 
         usage = None
         if completion.usage is not None:
@@ -139,9 +180,10 @@ class OpenAICompatibleModelClient:
                 total_tokens=int(completion.usage.total_tokens),
             )
         return ModelResponse(
-            content=content,
+            content=arguments,
             model_id=str(completion.model or self.model_id),
             response_id=str(completion.id) if completion.id else None,
+            tool_call_id=tool_call.id,
             usage=usage,
         )
 

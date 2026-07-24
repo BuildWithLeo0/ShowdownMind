@@ -36,20 +36,28 @@ def snapshot() -> BattleSnapshot:
     )
 
 
+def decision_json(
+    *,
+    action_id: str = "move:tackle",
+    confidence: float | bool = 0.8,
+    reason_codes: list[str] | None = None,
+    short_rationale: str = "Best available damage.",
+) -> str:
+    return json.dumps(
+        {
+            "action_id": action_id,
+            "confidence": confidence,
+            "reason_codes": reason_codes or ["DAMAGE"],
+            "short_rationale": short_rationale,
+        }
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("input_format", ["full", "pruned", "compact"])
 async def test_policy_accepts_one_valid_json_decision(input_format: str) -> None:
     client = ScriptedModelClient(
-        [
-            json.dumps(
-                {
-                    "action_id": "move:tackle",
-                    "confidence": 0.8,
-                    "reason_codes": ["DAMAGE"],
-                    "short_rationale": "Best available damage.",
-                }
-            )
-        ],
+        [decision_json()],
         model_id="test-model",
     )
 
@@ -63,6 +71,16 @@ async def test_policy_accepts_one_valid_json_decision(input_format: str) -> None
     assert result.model_ids == ("test-model",)
     assert result.errors == ()
     assert result.policy_input_format == f"{input_format}-v1"
+    request = client.requests[0]
+    assert request.tool.name == "choose_battle_action"
+    assert request.tool.strict
+    assert request.tool.parameters["properties"]["action_id"]["enum"] == ["move:tackle"]
+    assert set(request.tool.parameters["required"]) == {
+        "action_id",
+        "confidence",
+        "reason_codes",
+        "short_rationale",
+    }
 
 
 @pytest.mark.asyncio
@@ -70,7 +88,7 @@ async def test_policy_repairs_once_after_invalid_output() -> None:
     client = ScriptedModelClient(
         [
             "not json",
-            '{"action_id": "move:tackle"}',
+            decision_json(),
         ]
     )
 
@@ -111,8 +129,8 @@ async def test_policy_counts_attempts_when_model_never_returns() -> None:
 async def test_policy_rejects_boolean_confidence() -> None:
     client = ScriptedModelClient(
         [
-            '{"action_id": "move:tackle", "confidence": true}',
-            '{"action_id": "move:tackle"}',
+            decision_json(confidence=True),
+            decision_json(),
         ]
     )
 
@@ -120,6 +138,52 @@ async def test_policy_rejects_boolean_confidence() -> None:
 
     assert result.attempts == 2
     assert "confidence must be a number" in result.errors[0]
+
+
+@pytest.mark.asyncio
+async def test_policy_requires_a_short_public_rationale() -> None:
+    client = ScriptedModelClient(
+        [
+            decision_json(short_rationale=" "),
+            decision_json(short_rationale="Preserve momentum with reliable damage."),
+        ]
+    )
+
+    result = await SingleCallPolicy(client).decide(snapshot(), catalog())
+
+    assert result.attempts == 2
+    assert "short_rationale must not be empty" in result.errors[0]
+    assert result.decision.short_rationale == "Preserve momentum with reliable damage."
+
+
+@pytest.mark.asyncio
+async def test_policy_enforces_rationale_length_limit() -> None:
+    client = ScriptedModelClient(
+        [
+            decision_json(short_rationale="x" * 241),
+            decision_json(short_rationale="Choose the safest legal move."),
+        ]
+    )
+
+    result = await SingleCallPolicy(client).decide(snapshot(), catalog())
+
+    assert result.attempts == 2
+    assert "at most 240 characters" in result.errors[0]
+
+
+@pytest.mark.asyncio
+async def test_policy_rejects_unknown_reason_codes() -> None:
+    client = ScriptedModelClient(
+        [
+            decision_json(reason_codes=["MADE_UP"]),
+            decision_json(reason_codes=["DAMAGE"]),
+        ]
+    )
+
+    result = await SingleCallPolicy(client).decide(snapshot(), catalog())
+
+    assert result.attempts == 2
+    assert "unknown reason_codes" in result.errors[0]
 
 
 def test_policy_limits_repairs_to_one() -> None:

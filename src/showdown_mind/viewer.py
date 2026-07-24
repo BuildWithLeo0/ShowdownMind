@@ -9,9 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from showdown_mind.experiment_artifacts import redact_secrets
+from showdown_mind.models import ACTION_TOOL_NAME
 from showdown_mind.paths import REPLAY_DIR
 
-VIEWER_SCHEMA_VERSION = "1.1"
+VIEWER_SCHEMA_VERSION = "1.2"
 TITLE_PATTERN = re.compile(r"<title>\s*([^<]+?)\s*</title>", re.IGNORECASE)
 LOG_PATTERN = re.compile(
     r'<script[^>]*class=["\'][^"\']*\bbattle-log-data\b[^"\']*["\'][^>]*>'
@@ -215,6 +216,12 @@ def _viewer_decision(record: dict[str, Any], index: int) -> dict[str, Any]:
         "fallback_used": bool(record.get("fallback_used", False)),
         "errors": [redact_secrets(str(error)) for error in errors],
         "model_ids": [str(model) for model in record.get("model_ids") or []],
+        "tool": {
+            "name": str(record.get("tool_name") or ACTION_TOOL_NAME),
+            "call_ids": [
+                str(tool_call_id) for tool_call_id in record.get("tool_call_ids") or []
+            ],
+        },
         "usage": {
             "input_tokens": sum(
                 int(usage.get("input_tokens", 0)) for usage in valid_usages

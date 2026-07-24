@@ -232,6 +232,9 @@ const badgeMarkup = (decision) => {
   if (decision.attempts > 1) {
     badges.push(`<span class="badge">${decision.attempts} ATTEMPTS</span>`);
   }
+  if (decision.tool.call_ids.length) {
+    badges.push('<span class="badge">NATIVE TOOL CALL</span>');
+  }
   for (const reason of decision.reason_codes) {
     badges.push(`<span class="badge">${escapeHtml(reason)}</span>`);
   }
@@ -395,6 +398,9 @@ const renderState = (decision) => {
 const renderTrace = (decision) => {
   const trace = [
     `<div class="trace-item">模型接口共执行 <strong>${decision.attempts}</strong> 次；最终动作通过白名单校验。</div>`,
+    decision.tool.call_ids.length
+      ? `<div class="trace-item">原生工具：<code>${escapeHtml(decision.tool.name)}</code> · ${decision.tool.call_ids.map((callId) => `<code>${escapeHtml(callId)}</code>`).join(" / ")}</div>`
+      : '<div class="trace-item">这条旧记录或测试记录没有原生 tool-call ID。</div>',
     `<div class="trace-item">输入为 <code>${escapeHtml(decision.policy_input.format || "unknown")}</code>，${decision.policy_input.characters.toLocaleString()} characters。</div>`,
     `<div class="trace-item">Token：输入 ${decision.usage.input_tokens.toLocaleString()} / 输出 ${decision.usage.output_tokens.toLocaleString()} / 合计 ${decision.usage.total_tokens.toLocaleString()}。</div>`,
   ];

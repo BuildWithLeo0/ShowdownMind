@@ -19,6 +19,8 @@ def test_jsonl_writer_appends_decision_records(tmp_path) -> None:
         model_ids=("model-1",),
         errors=(),
         raw_responses=('{"action_id":"move:tackle"}',),
+        tool_name="choose_battle_action",
+        tool_call_ids=("call-test",),
     )
 
     writer(record)
@@ -28,3 +30,5 @@ def test_jsonl_writer_appends_decision_records(tmp_path) -> None:
     assert len(rows) == 2
     assert rows[0]["action_id"] == "move:tackle"
     assert rows[0]["model_ids"] == ["model-1"]
+    assert rows[0]["tool_name"] == "choose_battle_action"
+    assert rows[0]["tool_call_ids"] == ["call-test"]

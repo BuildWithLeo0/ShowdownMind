@@ -18,6 +18,10 @@ class ModelCheckResult:
     prompt_format: str
     model_input_characters: int
     action_id: str
+    confidence: float | None
+    reason_codes: tuple[str, ...]
+    short_rationale: str
+    tool_call_id: str | None
     attempts: int
     input_tokens: int
     output_tokens: int
@@ -68,6 +72,10 @@ async def run_model_check(
         prompt_format=result.policy_input_format,
         model_input_characters=result.policy_input_characters,
         action_id=result.decision.action_id,
+        confidence=result.decision.confidence,
+        reason_codes=result.decision.reason_codes,
+        short_rationale=result.decision.short_rationale,
+        tool_call_id=(result.tool_call_ids[-1] if result.tool_call_ids else None),
         attempts=result.attempts,
         input_tokens=sum(usage.input_tokens for usage in result.usages),
         output_tokens=sum(usage.output_tokens for usage in result.usages),

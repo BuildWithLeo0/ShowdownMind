@@ -12,19 +12,40 @@ from showdown_mind.domain import (
     PolicyResult,
     TokenUsage,
 )
-from showdown_mind.models import ModelCallError, ModelClient, ModelRequest
+from showdown_mind.models import (
+    ACTION_TOOL_NAME,
+    ModelCallError,
+    ModelClient,
+    ModelRequest,
+    ModelTool,
+)
 from showdown_mind.policy_input import (
     POLICY_INPUT_FORMATS,
     CompiledPolicyInput,
     compile_policy_input,
 )
 
+MAX_RATIONALE_CHARACTERS = 240
+REASON_CODES = (
+    "DAMAGE",
+    "SURVIVAL",
+    "TYPE_MATCHUP",
+    "STATUS",
+    "SETUP",
+    "SPEED_CONTROL",
+    "RESOURCE_PRESERVATION",
+    "FORCED_SWITCH",
+    "INFORMATION",
+    "OTHER",
+)
+
 SYSTEM_PROMPT = """You choose one legal action in a Pokémon Showdown battle.
 Use only the player-visible state in the request.
 The input schema is full-v1, pruned-v1, or compact-v1.
 In pruned-v1 and compact-v1, omitted optional values are false, empty, or unknown.
-Return one JSON object and no other text.
-The action_id must exactly match a legal action_id."""
+Call choose_battle_action exactly once.
+The short_rationale must be one concise public sentence explaining the choice,
+not private chain-of-thought."""
 
 
 class PolicyFailure(RuntimeError):
@@ -35,6 +56,7 @@ class PolicyFailure(RuntimeError):
         raw_responses: tuple[str, ...],
         model_ids: tuple[str, ...],
         response_ids: tuple[str, ...],
+        tool_call_ids: tuple[str, ...],
         usages: tuple[TokenUsage, ...],
         errors: tuple[str, ...],
         attempts: int,
@@ -45,6 +67,7 @@ class PolicyFailure(RuntimeError):
         self.raw_responses = raw_responses
         self.model_ids = model_ids
         self.response_ids = response_ids
+        self.tool_call_ids = tool_call_ids
         self.usages = usages
         self.errors = errors
         self.attempts = attempts
@@ -87,12 +110,14 @@ class SingleCallPolicy:
         raw_responses: list[str] = []
         model_ids: list[str] = []
         response_ids: list[str] = []
+        tool_call_ids: list[str] = []
         usages: list[TokenUsage] = []
         errors: list[str] = []
         started = time.monotonic()
-        request = ModelRequest(
-            system_prompt=SYSTEM_PROMPT,
+        tool = self._action_tool(catalog)
+        request = self._model_request(
             user_prompt=policy_input.canonical_json(),
+            tool=tool,
         )
 
         for attempt in range(self._max_repairs + 1):
@@ -110,6 +135,7 @@ class SingleCallPolicy:
                         raw_responses=raw_responses,
                         model_ids=model_ids,
                         response_ids=response_ids,
+                        tool_call_ids=tool_call_ids,
                         usages=usages,
                         errors=errors,
                         attempts=attempt + 1,
@@ -123,6 +149,8 @@ class SingleCallPolicy:
             model_ids.append(response.model_id)
             if response.response_id is not None:
                 response_ids.append(response.response_id)
+            if response.tool_call_id is not None:
+                tool_call_ids.append(response.tool_call_id)
             if response.usage is not None:
                 usages.append(response.usage)
             try:
@@ -136,6 +164,7 @@ class SingleCallPolicy:
                         raw_responses=raw_responses,
                         model_ids=model_ids,
                         response_ids=response_ids,
+                        tool_call_ids=tool_call_ids,
                         usages=usages,
                         errors=errors,
                         attempts=attempt + 1,
@@ -146,6 +175,7 @@ class SingleCallPolicy:
                     policy_input=policy_input,
                     invalid_response=response.content,
                     error=error,
+                    tool=tool,
                 )
                 continue
 
@@ -155,6 +185,7 @@ class SingleCallPolicy:
                 raw_responses=tuple(raw_responses),
                 model_ids=tuple(model_ids),
                 response_ids=tuple(response_ids),
+                tool_call_ids=tuple(tool_call_ids),
                 usages=tuple(usages),
                 errors=tuple(errors),
                 elapsed_seconds=round(time.monotonic() - started, 6),
@@ -173,6 +204,7 @@ class SingleCallPolicy:
         raw_responses: list[str],
         model_ids: list[str],
         response_ids: list[str],
+        tool_call_ids: list[str],
         usages: list[TokenUsage],
         errors: list[str],
         attempts: int,
@@ -184,6 +216,7 @@ class SingleCallPolicy:
             raw_responses=tuple(raw_responses),
             model_ids=tuple(model_ids),
             response_ids=tuple(response_ids),
+            tool_call_ids=tuple(tool_call_ids),
             usages=tuple(usages),
             errors=tuple(errors),
             attempts=attempts,
@@ -197,35 +230,59 @@ class SingleCallPolicy:
         if not isinstance(value, dict):
             raise TypeError("response must be a JSON object")
 
-        action_id = value.get("action_id")
+        required = {
+            "action_id",
+            "confidence",
+            "reason_codes",
+            "short_rationale",
+        }
+        missing = sorted(required.difference(value))
+        if missing:
+            raise TypeError(f"missing required fields: {', '.join(missing)}")
+        extra = sorted(set(value).difference(required))
+        if extra:
+            raise TypeError(f"unexpected fields: {', '.join(extra)}")
+
+        action_id = value["action_id"]
         if not isinstance(action_id, str):
             raise TypeError("action_id must be a string")
         if not catalog.contains(action_id):
             raise ValueError(f"action_id {action_id!r} is not currently legal")
 
-        confidence = value.get("confidence")
-        if confidence is not None:
-            if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
-                raise TypeError("confidence must be a number")
-            confidence = float(confidence)
-            if not 0.0 <= confidence <= 1.0:
-                raise ValueError("confidence must be between 0 and 1")
+        confidence = value["confidence"]
+        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+            raise TypeError("confidence must be a number")
+        confidence = float(confidence)
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError("confidence must be between 0 and 1")
 
-        reason_codes = value.get("reason_codes", [])
+        reason_codes = value["reason_codes"]
         if not isinstance(reason_codes, list) or not all(
             isinstance(code, str) for code in reason_codes
         ):
             raise TypeError("reason_codes must be a list of strings")
+        if not 1 <= len(reason_codes) <= 3:
+            raise ValueError("reason_codes must contain between 1 and 3 values")
+        invalid_codes = sorted(set(reason_codes).difference(REASON_CODES))
+        if invalid_codes:
+            raise ValueError(f"unknown reason_codes: {', '.join(invalid_codes)}")
 
-        rationale = value.get("short_rationale", "")
+        rationale = value["short_rationale"]
         if not isinstance(rationale, str):
             raise TypeError("short_rationale must be a string")
+        rationale = rationale.strip()
+        if not rationale:
+            raise ValueError("short_rationale must not be empty")
+        if len(rationale) > MAX_RATIONALE_CHARACTERS:
+            raise ValueError(
+                f"short_rationale must be at most {MAX_RATIONALE_CHARACTERS} characters"
+            )
 
         return PolicyDecision(
             action_id=action_id,
             confidence=confidence,
             reason_codes=tuple(reason_codes),
-            short_rationale=rationale[:500],
+            short_rationale=rationale,
         )
 
     @staticmethod
@@ -234,6 +291,7 @@ class SingleCallPolicy:
         policy_input: CompiledPolicyInput,
         invalid_response: str,
         error: str,
+        tool: ModelTool,
     ) -> ModelRequest:
         actions = policy_input.payload["legal_actions"]
         valid_ids = [str(action["action_id"]) for action in actions]
@@ -242,13 +300,77 @@ class SingleCallPolicy:
             "invalid_response": invalid_response,
             "battle": policy_input.payload,
             "valid_action_ids": valid_ids,
-            "instruction": "Return corrected JSON only.",
+            "instruction": f"Call {ACTION_TOOL_NAME} once with corrected arguments.",
         }
-        return ModelRequest(
-            system_prompt=SYSTEM_PROMPT,
+        return SingleCallPolicy._model_request(
             user_prompt=json.dumps(
                 repair_payload,
                 ensure_ascii=False,
                 sort_keys=True,
             ),
+            tool=tool,
+        )
+
+    @staticmethod
+    def _model_request(*, user_prompt: str, tool: ModelTool) -> ModelRequest:
+        return ModelRequest(
+            system_prompt=SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            tool=tool,
+        )
+
+    @staticmethod
+    def _action_tool(catalog: ActionCatalog) -> ModelTool:
+        valid_ids = [action.action_id for action in catalog.actions]
+        return ModelTool(
+            name=ACTION_TOOL_NAME,
+            description=(
+                "Select exactly one currently legal Pokémon Showdown action and "
+                "give a brief public explanation."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "action_id": {
+                        "type": "string",
+                        "enum": valid_ids,
+                        "description": "One action ID from the current legal list.",
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                        "description": (
+                            "Self-reported confidence from 0 to 1; this is not "
+                            "guaranteed to be calibrated."
+                        ),
+                    },
+                    "reason_codes": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": list(REASON_CODES),
+                        },
+                        "minItems": 1,
+                        "maxItems": 3,
+                        "description": "One to three concise factors behind the choice.",
+                    },
+                    "short_rationale": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": MAX_RATIONALE_CHARACTERS,
+                        "description": (
+                            "One concise public sentence explaining the choice; "
+                            "do not provide private chain-of-thought."
+                        ),
+                    },
+                },
+                "required": [
+                    "action_id",
+                    "confidence",
+                    "reason_codes",
+                    "short_rationale",
+                ],
+                "additionalProperties": False,
+            },
         )

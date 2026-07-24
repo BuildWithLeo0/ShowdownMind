@@ -9,6 +9,7 @@ from poke_env.player.battle_order import BattleOrder
 
 from showdown_mind.actions import ActionCatalog
 from showdown_mind.domain import DecisionRecord, TokenUsage
+from showdown_mind.models import ACTION_TOOL_NAME
 from showdown_mind.observation import BattleSnapshotBuilder
 from showdown_mind.policy import PolicyFailure, SingleCallPolicy
 
@@ -55,6 +56,7 @@ class ResearchPlayer(Player):
         raw_responses: tuple[str, ...] = ()
         model_ids: tuple[str, ...] = ()
         response_ids: tuple[str, ...] = ()
+        tool_call_ids: tuple[str, ...] = ()
         usages: tuple[TokenUsage, ...] = ()
         confidence: float | None = None
         reason_codes: tuple[str, ...] = ()
@@ -73,6 +75,7 @@ class ResearchPlayer(Player):
             raw_responses = result.raw_responses
             model_ids = result.model_ids
             response_ids = result.response_ids
+            tool_call_ids = result.tool_call_ids
             usages = result.usages
             confidence = result.decision.confidence
             reason_codes = result.decision.reason_codes
@@ -88,6 +91,7 @@ class ResearchPlayer(Player):
             raw_responses = exc.raw_responses
             model_ids = exc.model_ids
             response_ids = exc.response_ids
+            tool_call_ids = exc.tool_call_ids
             usages = exc.usages
             attempts = exc.attempts
             elapsed_seconds = exc.elapsed_seconds
@@ -101,6 +105,8 @@ class ResearchPlayer(Player):
                 request_id=snapshot.request_id,
                 catalog=catalog,
             )
+            reason_codes = ("FALLBACK",)
+            short_rationale = "模型未能返回有效工具调用，系统使用确定性合法备用动作。"
 
         record = DecisionRecord(
             battle_id=snapshot.battle_id,
@@ -119,6 +125,8 @@ class ResearchPlayer(Player):
             policy_input_characters=policy_input_characters,
             policy_input=policy_input,
             response_ids=response_ids,
+            tool_name=ACTION_TOOL_NAME,
+            tool_call_ids=tool_call_ids,
             usages=usages,
             confidence=confidence,
             reason_codes=reason_codes,

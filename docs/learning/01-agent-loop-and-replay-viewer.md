@@ -30,12 +30,31 @@ program define what is possible, then let the model choose.
 
 ## 3. Decide and validate
 
-`policy.py` compiles a model input, asks for one structured choice, validates
-the response, permits one repair attempt, and can fall back safely.
+`policy.py` compiles a model input and exposes one forced native tool:
+
+```text
+choose_battle_action(
+  action_id,
+  confidence,
+  reason_codes,
+  short_rationale
+)
+```
+
+This is a real model tool call, but the model does not execute a Showdown
+command. It asks the host program to use one legal `action_id`; the program then
+validates the arguments and decides whether to honor that request. This
+separation is the safety boundary between model reasoning and environment
+control.
+
+All four arguments are required. The short rationale is a public, concise
+explanation for humans and experiments, not private chain-of-thought. The
+policy permits one repair attempt and can fall back safely.
 
 The viewer's **决策** tab shows the accepted choice and public short rationale.
 The **执行记录** tab shows attempts, validation errors, fallback use, latency,
-and token usage. It does not claim to reveal private chain-of-thought.
+token usage, and the provider's tool-call ID. It does not claim to reveal
+private chain-of-thought.
 
 ## 4. Act and record
 
