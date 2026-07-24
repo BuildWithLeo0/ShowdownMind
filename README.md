@@ -161,6 +161,37 @@ reuse an existing artifact path so separate experiments cannot be mixed
 accidentally. API keys, request headers, raw environment variables, and hidden
 opponent state are never written to the manifest.
 
+## Review a battle visually
+
+Generate a local review page from any single-battle decision log:
+
+```bash
+uv run showdown-mind visualize \
+  .runtime/decisions/gpt-5.6-luna-pruned.jsonl
+```
+
+The command finds the matching `poke-env` replay by battle ID, creates a sibling
+`.viewer.html` file, and opens it in the default browser. The left side uses the
+native Pokémon Showdown animated replay. The right side explains the Agent's
+visible state, legal actions, selected action, public rationale, retries,
+fallbacks, latency, and token usage.
+
+The Showdown playback controls and Agent decision timeline are independent in
+this first version. Use `--no-open` in headless environments, `--force` to
+replace an existing viewer, or `--battle-id` when one JSONL file contains
+several battles.
+
+The viewer deliberately excludes raw model responses, environment variables,
+credentials, and hidden opponent information. It shows an auditable decision
+trace, not hidden chain-of-thought.
+
+## Learn the Agent loop
+
+If you are using this project to learn Agent development, start with the
+[observe → decide → act → review walkthrough](docs/learning/01-agent-loop-and-replay-viewer.md).
+It maps each step to the relevant source file and uses the viewer to make the
+otherwise invisible model boundary concrete.
+
 ## Tests
 
 ```bash
@@ -179,3 +210,5 @@ and the
 [technical plan](docs/plans/2026-07-24-pokemon-showdown-agent-technical-design.md).
 Experiment provenance is described in the
 [artifact design](docs/plans/2026-07-24-experiment-artifacts-design.md).
+The native replay interface is described in the
+[viewer design](docs/plans/2026-07-24-replay-decision-viewer-design.md).

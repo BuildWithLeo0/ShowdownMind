@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import sys
+import webbrowser
 from pathlib import Path
 
 from showdown_mind.agent_runner import run_agent_battles
@@ -28,6 +29,7 @@ from showdown_mind.showdown import (
     setup_showdown,
     start_showdown,
 )
+from showdown_mind.viewer import build_replay_viewer
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -131,6 +133,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="compare full, pruned, and compact inputs from a decision log",
     )
     prompt_benchmark.add_argument("decision_log", type=Path)
+
+    visualize = subparsers.add_parser(
+        "visualize",
+        help="build a local native replay and Agent decision viewer",
+    )
+    visualize.add_argument("decision_log", type=Path)
+    visualize.add_argument(
+        "--replay",
+        type=Path,
+        help="use this replay HTML instead of discovering it by battle ID",
+    )
+    visualize.add_argument(
+        "--battle-id",
+        help="select one battle when the decision log contains several",
+    )
+    visualize.add_argument(
+        "--output",
+        type=Path,
+        help="write the generated viewer to this HTML path",
+    )
+    visualize.add_argument(
+        "--no-open",
+        action="store_true",
+        help="generate the viewer without opening the browser",
+    )
+    visualize.add_argument(
+        "--force",
+        action="store_true",
+        help="replace an existing viewer output",
+    )
     return parser
 
 
@@ -238,6 +270,20 @@ def _run_prompt_benchmark(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_visualize(args: argparse.Namespace) -> int:
+    result = build_replay_viewer(
+        args.decision_log,
+        replay_path=args.replay,
+        output_path=args.output,
+        battle_id=args.battle_id,
+        force=args.force,
+    )
+    print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    if not args.no_open:
+        webbrowser.open(Path(result.output_path).resolve().as_uri())
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -262,6 +308,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run_llm_smoke(args)
         if args.command == "prompt-benchmark":
             return _run_prompt_benchmark(args)
+        if args.command == "visualize":
+            return _run_visualize(args)
     except PolicyFailure as exc:
         detail = exc.errors[-1] if exc.errors else str(exc)
         print(f"error: model policy failed: {detail}", file=sys.stderr)

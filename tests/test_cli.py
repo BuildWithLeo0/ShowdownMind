@@ -2,6 +2,7 @@ from argparse import Namespace
 
 from showdown_mind import cli
 from showdown_mind.agent_runner import AgentSmokeResult
+from showdown_mind.viewer import ViewerBuildResult
 
 
 def smoke_result() -> AgentSmokeResult:
@@ -77,3 +78,31 @@ def test_llm_smoke_passes_configured_timeout(monkeypatch) -> None:
     assert calls["timeout_seconds"] == 321.0
     assert calls["prompt_format"] == "full"
     assert calls["check_prompt_format"] == "full"
+
+
+def test_visualize_opens_generated_viewer(monkeypatch, tmp_path) -> None:
+    output = tmp_path / "viewer.html"
+    opened = []
+
+    def fake_build(*args, **kwargs):
+        assert kwargs["battle_id"] == "battle-1"
+        return ViewerBuildResult(
+            battle_id="battle-1",
+            decisions=2,
+            replay_path="replay.html",
+            output_path=str(output),
+        )
+
+    monkeypatch.setattr(cli, "build_replay_viewer", fake_build)
+    monkeypatch.setattr(cli.webbrowser, "open", opened.append)
+    args = Namespace(
+        decision_log=tmp_path / "decisions.jsonl",
+        replay=None,
+        battle_id="battle-1",
+        output=output,
+        no_open=False,
+        force=False,
+    )
+
+    assert cli._run_visualize(args) == 0
+    assert opened == [output.resolve().as_uri()]

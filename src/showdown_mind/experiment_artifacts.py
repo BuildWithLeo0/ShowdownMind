@@ -111,7 +111,7 @@ class ExperimentArtifactWriter:
             "schema_version": ARTIFACT_SCHEMA_VERSION,
             "failed_at": datetime.now(UTC).isoformat(),
             "error_type": type(error).__name__,
-            "message": _redact_secrets(str(error))[:1000],
+            "message": redact_secrets(str(error))[:1000],
         }
         _write_json_atomically(self.paths.failure, failure)
 
@@ -130,7 +130,7 @@ def _sanitize_provider_url(value: Any) -> str | None:
     return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
 
 
-def _redact_secrets(value: str) -> str:
+def redact_secrets(value: str) -> str:
     redacted = value
     for pattern in SECRET_PATTERNS:
         if pattern.pattern.startswith("(https?://)"):

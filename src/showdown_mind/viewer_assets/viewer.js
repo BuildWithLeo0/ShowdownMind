@@ -1,0 +1,383 @@
+const decodeUtf8 = (encoded) => {
+  const bytes = Uint8Array.from(atob(encoded.trim()), (character) =>
+    character.charCodeAt(0)
+  );
+  return new TextDecoder().decode(bytes);
+};
+
+const viewerData = JSON.parse(
+  decodeUtf8(document.querySelector("#viewer-data").textContent)
+);
+const replayHtml = decodeUtf8(
+  document.querySelector("#replay-data").textContent
+);
+
+const state = {
+  index: 0,
+  tab: "overview",
+};
+
+const elements = {
+  battleId: document.querySelector("#battle-id"),
+  decisionCount: document.querySelector("#decision-count"),
+  turnNumber: document.querySelector("#turn-number"),
+  decisionPosition: document.querySelector("#decision-position"),
+  matchup: document.querySelector("#matchup-strip"),
+  panel: document.querySelector("#panel"),
+  timeline: document.querySelector("#timeline"),
+  previous: document.querySelector("#previous"),
+  next: document.querySelector("#next"),
+  tabs: [...document.querySelectorAll(".tab")],
+  replay: document.querySelector("#replay-frame"),
+};
+
+const escapeHtml = (value) =>
+  String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+
+const titleCase = (value) =>
+  String(value ?? "")
+    .replaceAll("_", " ")
+    .replaceAll("-", " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+
+const displayPokemon = (pokemon, fallback = "Unknown") =>
+  pokemon?.name || titleCase(pokemon?.species) || fallback;
+
+const percent = (fraction) => {
+  const parsed = Number(fraction);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.min(100, Math.round(parsed * 100)));
+};
+
+const activePokemon = (side, opponent = false) => {
+  const team = opponent ? side?.revealed_team : side?.team;
+  if (!Array.isArray(team)) return null;
+  return (
+    team.find((pokemon) => pokemon.active) ||
+    team.find((pokemon) => pokemon.species === side?.active) ||
+    null
+  );
+};
+
+const formatValue = (value) => {
+  if (value === true) return "YES";
+  if (value === false) return "NO";
+  if (value === null || value === undefined || value === "") return "—";
+  if (Array.isArray(value)) return value.length ? value.join(", ") : "—";
+  if (typeof value === "object") {
+    const entries = Object.entries(value);
+    return entries.length
+      ? entries.map(([key, item]) => `${titleCase(key)}: ${formatValue(item)}`).join(" · ")
+      : "—";
+  }
+  return String(value);
+};
+
+const currentDecision = () => viewerData.decisions[state.index];
+
+const hpMarkup = (pokemon) => {
+  const hp = percent(pokemon?.hp_fraction);
+  const lowClass = hp <= 25 ? "is-low" : "";
+  return `<div class="hp-track" title="${hp}% HP"><i class="${lowClass}" style="width:${hp}%"></i></div>`;
+};
+
+const renderMatchup = (decision) => {
+  const own = activePokemon(decision.snapshot.own_side);
+  const opponent = activePokemon(decision.snapshot.opponent_side, true);
+  elements.matchup.innerHTML = `
+    <div class="matchup-side">
+      <small>SHOWDOWNMIND / ACTIVE</small>
+      <strong>${escapeHtml(displayPokemon(own, decision.snapshot.own_side?.active))}</strong>
+      ${hpMarkup(own)}
+    </div>
+    <div class="versus">vs.</div>
+    <div class="matchup-side is-opponent">
+      <small>OPPONENT / REVEALED</small>
+      <strong>${escapeHtml(displayPokemon(opponent, decision.snapshot.opponent_side?.active))}</strong>
+      ${hpMarkup(opponent)}
+    </div>
+  `;
+};
+
+const badgeMarkup = (decision) => {
+  const badges = [];
+  if (decision.fallback_used) {
+    badges.push('<span class="badge is-danger">FALLBACK USED</span>');
+  } else {
+    badges.push('<span class="badge is-signal">VALIDATED</span>');
+  }
+  if (decision.attempts > 1) {
+    badges.push(`<span class="badge">${decision.attempts} ATTEMPTS</span>`);
+  }
+  for (const reason of decision.reason_codes) {
+    badges.push(`<span class="badge">${escapeHtml(reason)}</span>`);
+  }
+  return badges.join("");
+};
+
+const renderOverview = (decision) => {
+  const action = decision.chosen_action;
+  const label = action?.label || decision.action_id || "No recorded action";
+  const confidence =
+    typeof decision.confidence === "number"
+      ? `${Math.round(decision.confidence * 100)}%`
+      : "—";
+  const rationale =
+    decision.short_rationale ||
+    "本次记录没有公开简短理由；这不影响动作与验证结果的可审计性。";
+  return `
+    <section class="choice-card">
+      <div class="label-row">SELECTED ACTION / 最终选择</div>
+      <div class="choice-main">
+        <h2>${escapeHtml(label)}</h2>
+        <div class="confidence">
+          ${confidence}
+          <small>CONFIDENCE</small>
+        </div>
+      </div>
+      <div class="badges">${badgeMarkup(decision)}</div>
+    </section>
+    <p class="rationale">${escapeHtml(rationale)}</p>
+    <div class="metrics">
+      <div class="metric">
+        <span class="metric-label">LATENCY</span>
+        <strong>${decision.elapsed_seconds.toFixed(2)}s</strong>
+      </div>
+      <div class="metric">
+        <span class="metric-label">TOKENS</span>
+        <strong>${decision.usage.total_tokens.toLocaleString()}</strong>
+      </div>
+      <div class="metric">
+        <span class="metric-label">LEGAL OPTIONS</span>
+        <strong>${decision.snapshot.legal_actions.length}</strong>
+      </div>
+      <div class="metric">
+        <span class="metric-label">MODEL</span>
+        <strong title="${escapeHtml(decision.model_ids.join(", "))}">
+          ${escapeHtml(decision.model_ids.at(-1) || "—")}
+        </strong>
+      </div>
+      <div class="metric">
+        <span class="metric-label">INPUT FORMAT</span>
+        <strong>${escapeHtml(decision.policy_input.format || "—")}</strong>
+      </div>
+      <div class="metric">
+        <span class="metric-label">REQUEST</span>
+        <strong>#${decision.request_id}</strong>
+      </div>
+    </div>
+  `;
+};
+
+const actionStats = (action) => {
+  const details = action.details || {};
+  if (action.kind === "switch") {
+    return `${percent(details.hp_fraction)}% HP`;
+  }
+  const power = details.base_power ? `BP ${details.base_power}` : "STATUS";
+  const accuracy =
+    typeof details.accuracy === "number"
+      ? `${Math.round(details.accuracy * 100)}% ACC`
+      : "";
+  return [power, accuracy].filter(Boolean).join("<br>");
+};
+
+const renderActions = (decision) => {
+  if (!decision.snapshot.legal_actions.length) {
+    return '<div class="empty-copy">这个请求没有记录合法动作。</div>';
+  }
+  return `
+    <div class="action-list">
+      ${decision.snapshot.legal_actions
+        .map(
+          (action, index) => `
+            <div class="action-card ${action.action_id === decision.action_id ? "is-chosen" : ""}">
+              <span class="action-number">${String(index + 1).padStart(2, "0")}</span>
+              <div class="action-copy">
+                <strong>${escapeHtml(action.label)}</strong>
+                <small>${escapeHtml(titleCase(action.kind))} · ${escapeHtml(titleCase(action.details?.type || action.details?.species || ""))}</small>
+              </div>
+              <div class="action-stats">${actionStats(action)}</div>
+            </div>
+          `
+        )
+        .join("")}
+    </div>
+  `;
+};
+
+const teamMarkup = (team) => {
+  if (!Array.isArray(team) || !team.length) {
+    return '<div class="empty-copy">尚未观察到队伍信息。</div>';
+  }
+  return `
+    <div class="team-list">
+      ${team
+        .map(
+          (pokemon) => `
+            <div class="pokemon-row ${pokemon.active ? "is-active" : ""} ${pokemon.fainted ? "is-fainted" : ""}">
+              <strong>${escapeHtml(displayPokemon(pokemon))}</strong>
+              <span>${escapeHtml(pokemon.status || (pokemon.fainted ? "FNT" : "OK"))}</span>
+              <span>${percent(pokemon.hp_fraction)}% HP</span>
+            </div>
+          `
+        )
+        .join("")}
+    </div>
+  `;
+};
+
+const keyValuesMarkup = (value) => {
+  const entries = Object.entries(value || {});
+  if (!entries.length) return '<div class="empty-copy">没有已记录的场地效果。</div>';
+  return `
+    <div class="key-values">
+      ${entries
+        .map(
+          ([key, item]) => `
+            <div class="key-value">
+              <small>${escapeHtml(titleCase(key))}</small>
+              <strong>${escapeHtml(formatValue(item))}</strong>
+            </div>
+          `
+        )
+        .join("")}
+    </div>
+  `;
+};
+
+const renderState = (decision) => {
+  const { own_side: own, opponent_side: opponent, field, resources } =
+    decision.snapshot;
+  return `
+    <section class="state-section">
+      <h3 class="subheading">OWN TEAM / 完整己方信息</h3>
+      ${teamMarkup(own?.team)}
+    </section>
+    <section class="state-section">
+      <h3 class="subheading">OPPONENT / 仅已公开信息</h3>
+      ${teamMarkup(opponent?.revealed_team)}
+    </section>
+    <section class="state-section">
+      <h3 class="subheading">FIELD & RESOURCES</h3>
+      ${keyValuesMarkup({
+        weather: field?.weather,
+        field: field?.fields,
+        ...resources,
+      })}
+    </section>
+  `;
+};
+
+const renderTrace = (decision) => {
+  const trace = [
+    `<div class="trace-item">模型接口共执行 <strong>${decision.attempts}</strong> 次；最终动作通过白名单校验。</div>`,
+    `<div class="trace-item">输入为 <code>${escapeHtml(decision.policy_input.format || "unknown")}</code>，${decision.policy_input.characters.toLocaleString()} characters。</div>`,
+    `<div class="trace-item">Token：输入 ${decision.usage.input_tokens.toLocaleString()} / 输出 ${decision.usage.output_tokens.toLocaleString()} / 合计 ${decision.usage.total_tokens.toLocaleString()}。</div>`,
+  ];
+  if (decision.fallback_used) {
+    trace.push(
+      '<div class="trace-item is-error">模型没有及时给出可执行动作，本回合使用了安全备用策略。</div>'
+    );
+  }
+  for (const error of decision.errors) {
+    trace.push(
+      `<div class="trace-item is-error">${escapeHtml(error)}</div>`
+    );
+  }
+  if (decision.policy_input.hash) {
+    trace.push(
+      `<div class="trace-item">输入指纹：<code>${escapeHtml(decision.policy_input.hash)}</code></div>`
+    );
+  }
+  return `<div class="trace-list">${trace.join("")}</div>`;
+};
+
+const panelRenderers = {
+  overview: renderOverview,
+  actions: renderActions,
+  state: renderState,
+  trace: renderTrace,
+};
+
+const renderTimeline = () => {
+  elements.timeline.innerHTML = viewerData.decisions
+    .map(
+      (decision, index) => `
+        <button
+          class="timeline-button ${decision.fallback_used ? "is-fallback" : ""}"
+          data-index="${index}"
+          title="Turn ${decision.turn} · ${escapeHtml(decision.action_id)}"
+        >
+          T${String(decision.turn).padStart(2, "0")}
+        </button>
+      `
+    )
+    .join("");
+  elements.timeline.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-index]");
+    if (!button) return;
+    selectDecision(Number(button.dataset.index));
+  });
+};
+
+const render = () => {
+  const decision = currentDecision();
+  elements.turnNumber.textContent = String(decision.turn).padStart(2, "0");
+  elements.decisionPosition.textContent = `${String(state.index + 1).padStart(2, "0")} / ${String(viewerData.decisions.length).padStart(2, "0")}`;
+  renderMatchup(decision);
+  elements.panel.innerHTML = panelRenderers[state.tab](decision);
+  elements.previous.disabled = state.index === 0;
+  elements.next.disabled = state.index === viewerData.decisions.length - 1;
+  elements.tabs.forEach((tab) =>
+    tab.classList.toggle("is-active", tab.dataset.tab === state.tab)
+  );
+  const timelineButtons = [
+    ...elements.timeline.querySelectorAll(".timeline-button"),
+  ];
+  timelineButtons.forEach((button, index) =>
+    button.classList.toggle("is-active", index === state.index)
+  );
+  timelineButtons[state.index]?.scrollIntoView({
+    behavior: "smooth",
+    block: "nearest",
+    inline: "center",
+  });
+};
+
+const selectDecision = (index) => {
+  state.index = Math.max(
+    0,
+    Math.min(viewerData.decisions.length - 1, index)
+  );
+  render();
+};
+
+elements.previous.addEventListener("click", () =>
+  selectDecision(state.index - 1)
+);
+elements.next.addEventListener("click", () =>
+  selectDecision(state.index + 1)
+);
+elements.tabs.forEach((tab) =>
+  tab.addEventListener("click", () => {
+    state.tab = tab.dataset.tab;
+    render();
+  })
+);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "ArrowLeft") selectDecision(state.index - 1);
+  if (event.key === "ArrowRight") selectDecision(state.index + 1);
+});
+
+elements.battleId.textContent = viewerData.battle_id;
+elements.decisionCount.textContent = `${viewerData.decisions.length} DECISIONS`;
+elements.replay.srcdoc = replayHtml;
+document.title = `${viewerData.battle_id} · ShowdownMind Replay Lab`;
+renderTimeline();
+render();

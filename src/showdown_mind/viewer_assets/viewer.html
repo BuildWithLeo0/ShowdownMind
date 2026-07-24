@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>ShowdownMind · Replay Lab</title>
+  <style>/*__VIEWER_CSS__*/</style>
+</head>
+<body>
+  <div class="grain" aria-hidden="true"></div>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="ShowdownMind Replay Lab">
+        <span class="brand-mark"><i></i><i></i></span>
+        <span>
+          <strong>ShowdownMind</strong>
+          <small>Replay Lab / 决策复盘室</small>
+        </span>
+      </a>
+      <div class="match-meta">
+        <span class="live-dot"></span>
+        <span id="battle-id">Loading battle…</span>
+        <span class="meta-divider"></span>
+        <span id="decision-count"></span>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="replay-column">
+        <div class="section-kicker">
+          <span>01 / BATTLE FEED</span>
+          <span class="native-tag">SHOWDOWN NATIVE REPLAY</span>
+        </div>
+        <div class="replay-shell">
+          <iframe
+            id="replay-frame"
+            title="Pokémon Showdown 原生对战回放"
+            loading="eager"
+          ></iframe>
+        </div>
+        <p class="replay-note">
+          左侧保留 Showdown 原生播放控制；右侧时间线独立查看 Agent 决策。
+          自动同步将在下一阶段加入。
+        </p>
+      </section>
+
+      <aside class="inspector">
+        <div class="inspector-heading">
+          <div>
+            <span class="eyebrow">AGENT DECISION</span>
+            <div class="turn-lockup">
+              <span>TURN</span>
+              <strong id="turn-number">01</strong>
+            </div>
+          </div>
+          <div class="decision-position">
+            <span id="decision-position">01 / 01</span>
+            <small>RECORDED CHOICE</small>
+          </div>
+        </div>
+
+        <div id="matchup-strip" class="matchup-strip"></div>
+
+        <nav class="tabs" aria-label="决策详情">
+          <button class="tab is-active" data-tab="overview">决策</button>
+          <button class="tab" data-tab="actions">候选动作</button>
+          <button class="tab" data-tab="state">可见状态</button>
+          <button class="tab" data-tab="trace">执行记录</button>
+        </nav>
+
+        <div id="panel" class="panel" aria-live="polite"></div>
+      </aside>
+    </main>
+
+    <footer class="transport">
+      <div class="transport-controls">
+        <button id="previous" class="transport-button" aria-label="上一个决策">←</button>
+        <button id="next" class="transport-button is-primary" aria-label="下一个决策">→</button>
+      </div>
+      <div class="timeline-wrap">
+        <div class="timeline-heading">
+          <span>DECISION TIMELINE</span>
+          <span id="timeline-caption">使用 ← → 浏览</span>
+        </div>
+        <div id="timeline" class="timeline"></div>
+      </div>
+    </footer>
+  </div>
+
+  <script type="application/octet-stream" id="viewer-data">__VIEWER_DATA_BASE64__</script>
+  <script type="application/octet-stream" id="replay-data">__REPLAY_HTML_BASE64__</script>
+  <script>/*__VIEWER_JS__*/</script>
+</body>
+</html>
