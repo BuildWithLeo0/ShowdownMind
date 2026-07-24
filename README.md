@@ -176,10 +176,14 @@ native Pokémon Showdown animated replay. The right side explains the Agent's
 visible state, legal actions, selected action, public rationale, retries,
 fallbacks, latency, and token usage.
 
-The Showdown playback controls and Agent decision timeline are independent in
-this first version. Use `--no-open` in headless environments, `--force` to
-replace an existing viewer, or `--battle-id` when one JSONL file contains
-several battles.
+The Agent timeline follows the native replay automatically, including play,
+pause, reset, previous turn, next turn, and go-to-turn. If one turn contains a
+second decision after a Pokémon faints, the inspector advances when the
+replacement switch appears in the replay. Manually choosing a decision pauses
+follow mode; click **跟随回放** to catch up again.
+
+Use `--no-open` in headless environments, `--force` to replace an existing
+viewer, or `--battle-id` when one JSONL file contains several battles.
 
 The viewer deliberately excludes raw model responses, environment variables,
 credentials, and hidden opponent information. It shows an auditable decision
@@ -212,3 +216,5 @@ Experiment provenance is described in the
 [artifact design](docs/plans/2026-07-24-experiment-artifacts-design.md).
 The native replay interface is described in the
 [viewer design](docs/plans/2026-07-24-replay-decision-viewer-design.md).
+Its protocol-step synchronization is described in the
+[replay sync design](docs/plans/2026-07-24-replay-sync-design.md).

@@ -48,6 +48,28 @@ shared `battle_id`. The generated HTML is a learning tool: the animation shows
 what happened in the environment while the inspector shows what crossed the
 Agent boundary.
 
+## 5. Synchronize environment time with Agent time
+
+A single turn number is not always enough. If the Agent's Pokémon faints after
+choosing a move, Showdown asks it to choose a replacement during the same turn.
+
+`viewer.py` therefore gives each recorded decision a replay protocol step:
+
+```text
+|turn|2                    → choose the turn-2 move
+...
+|faint|p1a: Zekrom
+|switch|p1a: Slowbro       → choose the turn-2 replacement
+```
+
+The browser reads the native player's current protocol step and activates the
+latest decision whose anchor has been reached. It never replaces Showdown's
+playback subscription or changes battle state.
+
+This illustrates another general Agent lesson: the environment's clock and the
+Agent's decision clock are often different. A useful trace needs a shared event
+identifier, not just a timestamp or human-facing turn number.
+
 ## A useful exercise
 
 Open a real viewer and find a decision with two attempts:

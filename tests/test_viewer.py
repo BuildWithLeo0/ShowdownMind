@@ -83,9 +83,26 @@ def write_log(path, *records: dict) -> None:
     )
 
 
-def write_replay(path, battle_id: str) -> None:
+def write_replay(path, battle_id: str, protocol: str | None = None) -> None:
+    battle_protocol = protocol or "\n".join(
+        [
+            f">{battle_id}",
+            "|init|battle",
+            "|player|p1|ResearchPlayer 1|",
+            "|player|p2|Opponent 1|",
+            "|start",
+            "|turn|1",
+            "|move|p1a: Pikachu|Thunderbolt|p2a: Squirtle",
+            "|win|ResearchPlayer 1",
+        ]
+    )
     path.write_text(
-        f"<!doctype html><title>{battle_id}</title><script>window.replay=true</script>",
+        (
+            f"<!doctype html><title>{battle_id}</title>"
+            '<script type="text/plain" class="battle-log-data">'
+            f"{battle_protocol}</script>"
+            "<script>window.replay=true</script>"
+        ),
         encoding="utf-8",
     )
 
@@ -119,6 +136,9 @@ def test_builds_single_file_viewer_with_sanitized_decisions(tmp_path) -> None:
     encoded_payload = json.dumps(payload)
     assert payload["battle_id"] == battle_id
     assert payload["decisions"][0]["action_id"] == "move:thunderbolt"
+    assert isinstance(payload["decisions"][0]["replay_step"], int)
+    assert payload["replay_sync"]["agent_side"] == "p1"
+    assert payload["replay_sync"]["anchored_decisions"] == 1
     assert payload["decisions"][0]["errors"] == ["provider mentioned [REDACTED]"]
     assert "raw-response-must-not-be-embedded" not in encoded_payload
     assert "private-shape" not in encoded_payload
@@ -205,3 +225,128 @@ def test_requires_force_to_replace_viewer(tmp_path) -> None:
     )
     assert result.output_path == str(output)
     assert "ShowdownMind" in output.read_text(encoding="utf-8")
+
+
+def test_anchors_second_same_turn_decision_to_forced_switch(tmp_path) -> None:
+    battle_id = "battle-gen9randombattle-55"
+    decision_log = tmp_path / "agent.jsonl"
+    replay = tmp_path / f"ResearchPlayer 1 - {battle_id}.html"
+    move_decision = decision(battle_id, turn=2)
+    switch_decision = decision(battle_id, turn=2)
+    switch_decision["request_id"] = 3
+    switch_decision["action_id"] = "switch:slowbro"
+    switch_decision["snapshot"]["request_id"] = 3
+    switch_decision["snapshot"]["legal_actions"] = [
+        {
+            "action_id": "switch:slowbro",
+            "kind": "switch",
+            "label": "Switch to Slowbro",
+            "details": {"species": "slowbro", "hp_fraction": 1.0},
+        }
+    ]
+    protocol = "\n".join(
+        [
+            f">{battle_id}",
+            "|init|battle",
+            "|player|p1|ResearchPlayer 1|",
+            "|player|p2|Opponent 1|",
+            "|turn|2",
+            "|move|p1a: Pikachu|Thunderbolt|p2a: Squirtle",
+            "|move|p2a: Squirtle|Surf|p1a: Pikachu",
+            "|faint|p1a: Pikachu",
+            "|switch|p1a: Slowbro|Slowbro, L85|300/300",
+            "|turn|3",
+        ]
+    )
+    write_log(decision_log, move_decision, switch_decision)
+    write_replay(replay, battle_id, protocol)
+
+    build_replay_viewer(decision_log, replay_path=replay)
+
+    payload = decoded_payload(
+        decision_log.with_suffix(".viewer.html").read_text(encoding="utf-8")
+    )
+    anchors = [
+        viewer_decision["replay_step"] for viewer_decision in payload["decisions"]
+    ]
+    switch_step = protocol.splitlines().index(
+        "|switch|p1a: Slowbro|Slowbro, L85|300/300"
+    ) + 1
+    assert anchors[0] < anchors[1]
+    assert anchors[1] == switch_step
+
+
+def test_detects_research_player_on_player_two_side(tmp_path) -> None:
+    battle_id = "battle-gen9randombattle-88"
+    decision_log = tmp_path / "agent.jsonl"
+    replay = tmp_path / f"ResearchPlayer 1 - {battle_id}.html"
+    protocol = "\n".join(
+        [
+            f">{battle_id}",
+            "|init|battle",
+            "|player|p1|Opponent 1|",
+            "|player|p2|ResearchPlayer 1|",
+            "|turn|1",
+            "|move|p2a: Pikachu|Thunderbolt|p1a: Squirtle",
+        ]
+    )
+    write_log(decision_log, decision(battle_id))
+    write_replay(replay, battle_id, protocol)
+
+    build_replay_viewer(decision_log, replay_path=replay)
+
+    payload = decoded_payload(
+        decision_log.with_suffix(".viewer.html").read_text(encoding="utf-8")
+    )
+    assert payload["replay_sync"]["agent_side"] == "p2"
+    assert isinstance(payload["decisions"][0]["replay_step"], int)
+
+
+def test_rejects_replay_without_research_player_side(tmp_path) -> None:
+    battle_id = "battle-gen9randombattle-91"
+    decision_log = tmp_path / "agent.jsonl"
+    replay = tmp_path / f"Agent - {battle_id}.html"
+    protocol = "\n".join(
+        [
+            f">{battle_id}",
+            "|player|p1|Player One|",
+            "|player|p2|Player Two|",
+            "|turn|1",
+        ]
+    )
+    write_log(decision_log, decision(battle_id))
+    write_replay(replay, battle_id, protocol)
+
+    with pytest.raises(ViewerError, match="ResearchPlayer side"):
+        build_replay_viewer(decision_log, replay_path=replay)
+
+
+def test_missing_duplicate_action_anchor_keeps_manual_fallback(tmp_path) -> None:
+    battle_id = "battle-gen9randombattle-92"
+    decision_log = tmp_path / "agent.jsonl"
+    replay = tmp_path / f"ResearchPlayer 1 - {battle_id}.html"
+    first = decision(battle_id, turn=2)
+    second = decision(battle_id, turn=2)
+    second["action_id"] = "switch:slowbro"
+    second["snapshot"]["legal_actions"] = []
+    protocol = "\n".join(
+        [
+            f">{battle_id}",
+            "|player|p1|ResearchPlayer 1|",
+            "|player|p2|Opponent 1|",
+            "|turn|2",
+            "|move|p1a: Pikachu|Thunderbolt|p2a: Squirtle",
+            "|turn|3",
+        ]
+    )
+    write_log(decision_log, first, second)
+    write_replay(replay, battle_id, protocol)
+
+    build_replay_viewer(decision_log, replay_path=replay)
+
+    payload = decoded_payload(
+        decision_log.with_suffix(".viewer.html").read_text(encoding="utf-8")
+    )
+    assert isinstance(payload["decisions"][0]["replay_step"], int)
+    assert payload["decisions"][1]["replay_step"] is None
+    assert payload["replay_sync"]["anchored_decisions"] == 1

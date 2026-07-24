@@ -11,8 +11,17 @@ from typing import Any
 from showdown_mind.experiment_artifacts import redact_secrets
 from showdown_mind.paths import REPLAY_DIR
 
-VIEWER_SCHEMA_VERSION = "1.0"
+VIEWER_SCHEMA_VERSION = "1.1"
 TITLE_PATTERN = re.compile(r"<title>\s*([^<]+?)\s*</title>", re.IGNORECASE)
+LOG_PATTERN = re.compile(
+    r'<script[^>]*class=["\'][^"\']*\bbattle-log-data\b[^"\']*["\'][^>]*>'
+    r"(.*?)</script>",
+    re.IGNORECASE | re.DOTALL,
+)
+RESEARCH_PLAYER_PATTERN = re.compile(
+    r"^\|player\|(p[12])\|ResearchPlayer\b",
+    re.IGNORECASE,
+)
 
 
 class ViewerError(ValueError):
@@ -55,20 +64,31 @@ def build_replay_viewer(
             f"Viewer output already exists: {destination}; pass --force to replace it"
         )
 
+    replay_html = selected_replay.read_text(encoding="utf-8")
+    decisions = [
+        _viewer_decision(record, index)
+        for index, record in enumerate(selected_records, start=1)
+    ]
+    protocol_lines = _extract_protocol_lines(replay_html)
+    agent_side = _find_agent_side(protocol_lines)
+    anchors = _build_replay_anchors(decisions, protocol_lines, agent_side)
+    for decision, anchor in zip(decisions, anchors, strict=True):
+        decision["replay_step"] = anchor
+
     payload = {
         "schema_version": VIEWER_SCHEMA_VERSION,
         "battle_id": selected_battle,
         "decision_log": decision_log.name,
         "replay": selected_replay.name,
-        "decisions": [
-            _viewer_decision(record, index)
-            for index, record in enumerate(selected_records, start=1)
-        ],
+        "replay_sync": {
+            "strategy": "protocol-step-v1",
+            "agent_side": agent_side,
+            "protocol_steps": len(protocol_lines),
+            "anchored_decisions": sum(anchor is not None for anchor in anchors),
+        },
+        "decisions": decisions,
     }
-    html = _render_html(
-        payload,
-        selected_replay.read_text(encoding="utf-8"),
-    )
+    html = _render_html(payload, replay_html)
     _write_text_atomically(destination, html)
     return ViewerBuildResult(
         battle_id=selected_battle,
@@ -220,6 +240,102 @@ def _viewer_decision(record: dict[str, Any], index: int) -> dict[str, Any]:
             "legal_actions": legal_actions,
         },
     }
+
+
+def _extract_protocol_lines(replay_html: str) -> list[str]:
+    match = LOG_PATTERN.search(replay_html)
+    if not match:
+        raise ViewerError("Replay contains no battle-log-data protocol")
+    return match.group(1).replace("\\/", "/").split("\n")
+
+
+def _find_agent_side(protocol_lines: list[str]) -> str:
+    for line in protocol_lines:
+        match = RESEARCH_PLAYER_PATTERN.match(line)
+        if match:
+            return match.group(1).lower()
+    raise ViewerError("Replay does not identify a ResearchPlayer side")
+
+
+def _build_replay_anchors(
+    decisions: list[dict[str, Any]],
+    protocol_lines: list[str],
+    agent_side: str,
+) -> list[int | None]:
+    turn_steps = {
+        int(line.removeprefix("|turn|")): index + 1
+        for index, line in enumerate(protocol_lines)
+        if line.startswith("|turn|") and line.removeprefix("|turn|").isdigit()
+    }
+    anchors: list[int | None] = []
+    seen_turns: dict[int, int] = {}
+    for decision in decisions:
+        turn = int(decision["turn"])
+        occurrence = seen_turns.get(turn, 0)
+        if occurrence == 0:
+            anchor = turn_steps.get(turn)
+        else:
+            previous = next(
+                (
+                    prior
+                    for prior in reversed(anchors)
+                    if prior is not None
+                ),
+                turn_steps.get(turn),
+            )
+            next_turn_step = min(
+                (
+                    step
+                    for later_turn, step in turn_steps.items()
+                    if later_turn > turn
+                ),
+                default=len(protocol_lines) + 1,
+            )
+            anchor = _find_action_step(
+                protocol_lines,
+                action_id=str(decision["action_id"]),
+                agent_side=agent_side,
+                start_step=previous or 0,
+                end_step=next_turn_step - 1,
+            )
+        anchors.append(anchor)
+        seen_turns[turn] = occurrence + 1
+    return anchors
+
+
+def _find_action_step(
+    protocol_lines: list[str],
+    *,
+    action_id: str,
+    agent_side: str,
+    start_step: int,
+    end_step: int,
+) -> int | None:
+    for index in range(max(start_step, 0), min(end_step, len(protocol_lines))):
+        if _action_matches_line(action_id, protocol_lines[index], agent_side):
+            return index + 1
+    return None
+
+
+def _action_matches_line(action_id: str, line: str, agent_side: str) -> bool:
+    parts = line.split("|")
+    if len(parts) < 4:
+        return False
+    actor = parts[2].lower()
+    if not actor.startswith(agent_side):
+        return False
+    if action_id.startswith("move:") and parts[1] == "move":
+        move_id = action_id.split(":", 2)[1]
+        return _to_id(parts[3]) == move_id
+    if action_id.startswith("switch:") and parts[1] in {"switch", "drag", "replace"}:
+        species_id = action_id.split(":", 1)[1]
+        replay_species = parts[3].split(",", 1)[0]
+        return _to_id(replay_species) == species_id
+    return False
+
+
+def _to_id(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
 
 
 def _render_html(payload: dict[str, Any], replay_html: str) -> str:

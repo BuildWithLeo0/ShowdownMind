@@ -30,7 +30,19 @@
       <section class="replay-column">
         <div class="section-kicker">
           <span>01 / BATTLE FEED</span>
-          <span class="native-tag">SHOWDOWN NATIVE REPLAY</span>
+          <div class="feed-status">
+            <span class="native-tag">SHOWDOWN NATIVE REPLAY</span>
+            <button
+              id="replay-sync"
+              class="sync-toggle is-connecting"
+              type="button"
+              aria-pressed="true"
+              title="切换是否让原生回放驱动 Agent 决策面板"
+            >
+              <i></i>
+              <span id="sync-label">连接播放器…</span>
+            </button>
+          </div>
         </div>
         <div class="replay-shell">
           <iframe
@@ -40,8 +52,8 @@
           ></iframe>
         </div>
         <p class="replay-note">
-          左侧保留 Showdown 原生播放控制；右侧时间线独立查看 Agent 决策。
-          自动同步将在下一阶段加入。
+          左侧播放、暂停和跳转会自动驱动右侧决策。手动浏览时间线时，
+          跟随模式会暂停；点击“跟随回放”即可重新同步。
         </p>
       </section>
 
@@ -81,7 +93,7 @@
       <div class="timeline-wrap">
         <div class="timeline-heading">
           <span>DECISION TIMELINE</span>
-          <span id="timeline-caption">使用 ← → 浏览</span>
+          <span id="timeline-caption">原生回放驱动 · ← → 手动浏览</span>
         </div>
         <div id="timeline" class="timeline"></div>
       </div>

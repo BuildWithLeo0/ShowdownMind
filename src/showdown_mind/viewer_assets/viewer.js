@@ -15,6 +15,10 @@ const replayHtml = decodeUtf8(
 const state = {
   index: 0,
   tab: "overview",
+  syncEnabled: true,
+  replayUnavailable: false,
+  bridgeStartedAt: Date.now(),
+  lastPlayback: null,
 };
 
 const elements = {
@@ -27,6 +31,8 @@ const elements = {
   timeline: document.querySelector("#timeline"),
   previous: document.querySelector("#previous"),
   next: document.querySelector("#next"),
+  syncToggle: document.querySelector("#replay-sync"),
+  syncLabel: document.querySelector("#sync-label"),
   tabs: [...document.querySelectorAll(".tab")],
   replay: document.querySelector("#replay-frame"),
 };
@@ -79,6 +85,118 @@ const formatValue = (value) => {
 };
 
 const currentDecision = () => viewerData.decisions[state.index];
+
+const readReplayState = () => {
+  try {
+    const battle = elements.replay.contentWindow?.Replays?.battle;
+    if (
+      !battle ||
+      !Number.isFinite(battle.turn) ||
+      !Number.isFinite(battle.currentStep)
+    ) {
+      return null;
+    }
+    return {
+      turn: Number(battle.turn),
+      currentStep: Number(battle.currentStep),
+      paused: Boolean(battle.paused),
+      ended: Boolean(battle.ended),
+    };
+  } catch {
+    return null;
+  }
+};
+
+const playbackDecisionIndex = (playback) => {
+  let target = 0;
+  let foundAnchor = false;
+  viewerData.decisions.forEach((decision, index) => {
+    if (
+      Number.isInteger(decision.replay_step) &&
+      decision.replay_step <= playback.currentStep
+    ) {
+      target = index;
+      foundAnchor = true;
+    }
+  });
+  if (foundAnchor) return target;
+
+  const exactTurn = viewerData.decisions.findIndex(
+    (decision) => decision.turn === playback.turn
+  );
+  if (exactTurn >= 0) return exactTurn;
+  viewerData.decisions.forEach((decision, index) => {
+    if (decision.turn <= playback.turn) target = index;
+  });
+  return target;
+};
+
+const updateSyncStatus = (playback) => {
+  let mode = "is-connecting";
+  let label = "连接播放器…";
+  elements.syncToggle.setAttribute(
+    "aria-pressed",
+    state.syncEnabled ? "true" : "false"
+  );
+  if (!state.syncEnabled) {
+    mode = "is-manual";
+    label = "跟随回放";
+  } else if (state.replayUnavailable) {
+    mode = "is-unavailable";
+    label = "同步不可用";
+  } else if (!playback) {
+    mode = "is-connecting";
+    label = "连接播放器…";
+  } else if (playback.ended) {
+    mode = "is-following";
+    label = "回放结束 · 跟随";
+  } else if (playback.paused) {
+    mode = "is-following";
+    label = "已暂停 · 跟随";
+  } else {
+    mode = "is-playing";
+    label = "播放中 · 跟随";
+  }
+  for (const className of [
+    "is-connecting",
+    "is-following",
+    "is-playing",
+    "is-manual",
+    "is-unavailable",
+  ]) {
+    elements.syncToggle.classList.toggle(className, className === mode);
+  }
+  elements.syncLabel.textContent = label;
+};
+
+const syncFromReplay = () => {
+  const playback = readReplayState();
+  if (!playback) {
+    if (Date.now() - state.bridgeStartedAt > 12000) {
+      state.replayUnavailable = true;
+    }
+    updateSyncStatus(null);
+    return;
+  }
+
+  state.replayUnavailable = false;
+  state.lastPlayback = playback;
+  elements.syncToggle.dataset.replayTurn = String(playback.turn);
+  elements.syncToggle.dataset.replayStep = String(playback.currentStep);
+  updateSyncStatus(playback);
+  if (!state.syncEnabled) return;
+
+  const target = playbackDecisionIndex(playback);
+  if (target !== state.index) {
+    selectDecision(target, "replay");
+  }
+};
+
+const setSyncEnabled = (enabled) => {
+  state.syncEnabled = enabled;
+  updateSyncStatus(state.lastPlayback);
+  if (enabled) syncFromReplay();
+};
 
 const hpMarkup = (pokemon) => {
   const hp = percent(pokemon?.hp_fraction);
@@ -295,6 +413,11 @@ const renderTrace = (decision) => {
       `<div class="trace-item">输入指纹：<code>${escapeHtml(decision.policy_input.hash)}</code></div>`
     );
   }
+  if (Number.isInteger(decision.replay_step)) {
+    trace.push(
+      `<div class="trace-item">回放锚点：protocol step <code>${decision.replay_step}</code></div>`
+    );
+  }
   return `<div class="trace-list">${trace.join("")}</div>`;
 };
 
@@ -312,7 +435,7 @@ const renderTimeline = () => {
         <button
           class="timeline-button ${decision.fallback_used ? "is-fallback" : ""}"
           data-index="${index}"
-          title="Turn ${decision.turn} · ${escapeHtml(decision.action_id)}"
+          title="Turn ${decision.turn} · ${escapeHtml(decision.action_id)} · Step ${decision.replay_step ?? "—"}"
         >
           T${String(decision.turn).padStart(2, "0")}
         </button>
@@ -350,7 +473,8 @@ const render = () => {
   });
 };
 
-const selectDecision = (index) => {
+const selectDecision = (index, source = "manual") => {
+  if (source === "manual") setSyncEnabled(false);
   state.index = Math.max(
     0,
     Math.min(viewerData.decisions.length - 1, index)
@@ -363,6 +487,9 @@ elements.previous.addEventListener("click", () =>
 );
 elements.next.addEventListener("click", () =>
   selectDecision(state.index + 1)
+);
+elements.syncToggle.addEventListener("click", () =>
+  setSyncEnabled(!state.syncEnabled)
 );
 elements.tabs.forEach((tab) =>
   tab.addEventListener("click", () => {
@@ -377,7 +504,15 @@ document.addEventListener("keydown", (event) => {
 
 elements.battleId.textContent = viewerData.battle_id;
 elements.decisionCount.textContent = `${viewerData.decisions.length} DECISIONS`;
+elements.replay.addEventListener("load", () => {
+  state.bridgeStartedAt = Date.now();
+  state.replayUnavailable = false;
+  syncFromReplay();
+});
 elements.replay.srcdoc = replayHtml;
 document.title = `${viewerData.battle_id} · ShowdownMind Replay Lab`;
 renderTimeline();
 render();
+const syncTimer = window.setInterval(syncFromReplay, 100);
+window.addEventListener("beforeunload", () => window.clearInterval(syncTimer));
+syncFromReplay();
