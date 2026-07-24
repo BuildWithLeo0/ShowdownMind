@@ -4,6 +4,7 @@ import pytest
 
 from showdown_mind.agent_runner import run_agent_battles
 from showdown_mind.baselines import run_baseline_battles
+from showdown_mind.evaluation import EvaluationPlan, run_evaluation
 from showdown_mind.models import DeterministicModelClient
 from showdown_mind.showdown import managed_showdown_server
 
@@ -45,3 +46,23 @@ async def test_policy_agent_finishes_and_logs_a_local_battle(tmp_path) -> None:
     assert (tmp_path / "agent.manifest.json").is_file()
     assert (tmp_path / "agent.summary.json").is_file()
     assert not (tmp_path / "agent.failure.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_evaluation_finishes_and_writes_aggregate_report(tmp_path) -> None:
+    output = tmp_path / "evaluation"
+    plan = EvaluationPlan(
+        name="deterministic-integration",
+        output_dir=output,
+        opponents=("random",),
+        battles_per_opponent=1,
+        run_timeout_seconds=60,
+    )
+    with managed_showdown_server():
+        report = await run_evaluation(DeterministicModelClient(), plan)
+
+    assert report["status"] == "complete"
+    assert report["overall"]["battles"] == 1
+    assert report["overall"]["fallbacks"] == 0
+    assert (output / "report.json").is_file()
+    assert (output / "report.md").is_file()

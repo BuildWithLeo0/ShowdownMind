@@ -178,6 +178,50 @@ reuse an existing artifact path so separate experiments cannot be mixed
 accidentally. API keys, request headers, raw environment variables, and hidden
 opponent state are never written to the manifest.
 
+## Evaluate an Agent version
+
+Preview the standard evaluation matrix without loading credentials, starting
+Showdown, creating files, or calling the model:
+
+```bash
+uv run showdown-mind evaluate \
+  --name direct-v0 \
+  --output-dir .runtime/evaluations/direct-v0
+```
+
+The default matrix is 30 live battles: ten against each built-in opponent.
+Exact token cost depends on battle length and is not known in advance. Add
+`--run` only after reviewing the printed plan:
+
+```bash
+uv run --env-file .env showdown-mind evaluate \
+  --name direct-v0 \
+  --output-dir .runtime/evaluations/direct-v0 \
+  --run
+```
+
+For a cheap pipeline check, add `--battles-per-opponent 1`. A real comparison
+should contain at least 20 battles per version.
+
+The evaluation directory contains every underlying run plus `report.json` and
+`report.md`. Reports aggregate win/score rates and Wilson intervals by
+opponent, retries, fallbacks, decision errors, tool-call and rationale
+coverage, confidence, tokens, and model latency.
+
+Compare a completed candidate against a completed baseline:
+
+```bash
+uv run showdown-mind compare \
+  .runtime/evaluations/direct-v0/report.json \
+  .runtime/evaluations/damage-tool-v1/report.json \
+  --output .runtime/evaluations/damage-vs-direct.json
+```
+
+The comparison uses a reproducible stratified bootstrap and reports
+`improved`, `regressed`, `inconclusive`, or `insufficient_data`. Reliability
+and cost remain explicit trade-offs rather than being hidden in one arbitrary
+score.
+
 ## Review a battle visually
 
 Generate a local review page from any single-battle decision log:
@@ -214,6 +258,9 @@ If you are using this project to learn Agent development, start with the
 It maps each step to the relevant source file and uses the viewer to make the
 otherwise invisible model boundary concrete.
 
+Then read [how to evaluate an Agent change](docs/learning/02-evaluating-agent-improvements.md)
+before adding the first analysis tool.
+
 ## Tests
 
 ```bash
@@ -238,3 +285,5 @@ Its protocol-step synchronization is described in the
 [replay sync design](docs/plans/2026-07-24-replay-sync-design.md).
 The model action boundary is described in the
 [native action tool design](docs/plans/2026-07-24-native-action-tool-design.md).
+The experiment matrix and comparison rules are described in the
+[evaluation system design](docs/plans/2026-07-24-agent-evaluation-system-design.md).

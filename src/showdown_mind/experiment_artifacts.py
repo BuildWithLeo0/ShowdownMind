@@ -62,7 +62,7 @@ class ExperimentArtifactWriter:
             )
 
     def write_manifest(self, model_client: Any, spec: ExperimentSpec) -> None:
-        git_commit, git_dirty = _git_state()
+        git_commit, git_dirty = git_state()
         manifest = {
             "schema_version": ARTIFACT_SCHEMA_VERSION,
             "run_id": self.paths.decisions.stem,
@@ -149,7 +149,7 @@ def _package_version(package: str) -> str | None:
         return None
 
 
-def _git_state() -> tuple[str | None, bool | None]:
+def git_state() -> tuple[str | None, bool | None]:
     try:
         commit = subprocess.run(
             ["git", "rev-parse", "HEAD"],

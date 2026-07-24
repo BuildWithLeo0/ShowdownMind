@@ -1,4 +1,5 @@
 from argparse import Namespace
+import json
 
 from showdown_mind import cli
 from showdown_mind.agent_runner import AgentSmokeResult
@@ -106,3 +107,32 @@ def test_visualize_opens_generated_viewer(monkeypatch, tmp_path) -> None:
 
     assert cli._run_visualize(args) == 0
     assert opened == [output.resolve().as_uri()]
+
+
+def test_evaluate_is_dry_run_by_default(monkeypatch, tmp_path, capsys) -> None:
+    def fail_if_live_client_is_created():
+        raise AssertionError("dry-run must not load credentials")
+
+    monkeypatch.setattr(
+        cli,
+        "live_model_client_from_env",
+        fail_if_live_client_is_created,
+    )
+    output = tmp_path / "evaluation"
+    args = Namespace(
+        name="v0",
+        output_dir=output,
+        opponents=["random", "max-base-power"],
+        battles_per_opponent=2,
+        repeats=1,
+        prompt_format="pruned",
+        run_timeout=None,
+        run=False,
+        no_manage_server=False,
+    )
+
+    assert cli._run_evaluate(args) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["mode"] == "dry-run"
+    assert printed["plan"]["total_battles"] == 4
+    assert not output.exists()

@@ -14,6 +14,13 @@ from showdown_mind.baselines import (
     run_baseline_battles,
 )
 from showdown_mind.doctor import collect_checks, doctor_succeeded
+from showdown_mind.evaluation import (
+    DEFAULT_OPPONENTS,
+    EvaluationError,
+    EvaluationPlan,
+    compare_evaluation_reports,
+    run_evaluation,
+)
 from showdown_mind.model_runner import run_model_check
 from showdown_mind.models import (
     DeterministicModelClient,
@@ -163,6 +170,54 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="replace an existing viewer output",
     )
+
+    evaluate = subparsers.add_parser(
+        "evaluate",
+        help="preview or run a repeatable live Agent evaluation matrix",
+    )
+    evaluate.add_argument("--name", required=True, help="evaluation version label")
+    evaluate.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+        help="new directory for the evaluation report and per-run artifacts",
+    )
+    evaluate.add_argument(
+        "--opponents",
+        nargs="+",
+        choices=choices,
+        default=list(DEFAULT_OPPONENTS),
+    )
+    evaluate.add_argument("--battles-per-opponent", type=int, default=10)
+    evaluate.add_argument("--repeats", type=int, default=1)
+    evaluate.add_argument(
+        "--prompt-format",
+        choices=POLICY_INPUT_FORMATS,
+        default="pruned",
+    )
+    evaluate.add_argument(
+        "--run-timeout",
+        type=float,
+        help="maximum seconds for each opponent/repeat batch",
+    )
+    evaluate.add_argument(
+        "--run",
+        action="store_true",
+        help="execute live model calls; without this flag only preview the plan",
+    )
+    evaluate.add_argument(
+        "--no-manage-server",
+        action="store_true",
+        help="require an already-running server instead of starting one",
+    )
+
+    compare = subparsers.add_parser(
+        "compare",
+        help="compare two completed evaluation reports",
+    )
+    compare.add_argument("baseline_report", type=Path)
+    compare.add_argument("candidate_report", type=Path)
+    compare.add_argument("--output", type=Path, required=True)
     return parser
 
 
@@ -284,6 +339,69 @@ def _run_visualize(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_evaluate(args: argparse.Namespace) -> int:
+    plan = EvaluationPlan(
+        name=args.name,
+        output_dir=args.output_dir,
+        opponents=tuple(args.opponents),
+        battles_per_opponent=args.battles_per_opponent,
+        repeats=args.repeats,
+        prompt_format=args.prompt_format,
+        run_timeout_seconds=args.run_timeout,
+    )
+    if not args.run:
+        print(json.dumps(plan.preview(), indent=2, sort_keys=True))
+        return 0
+
+    async def execute() -> None:
+        client = live_model_client_from_env()
+        try:
+            report = await run_evaluation(client, plan)
+        finally:
+            await client.aclose()
+        print(
+            json.dumps(
+                {
+                    "status": report["status"],
+                    "name": report["name"],
+                    "report_path": str(plan.output_dir / "report.json"),
+                    "markdown_path": str(plan.output_dir / "report.md"),
+                    "overall": report["overall"],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+
+    if args.no_manage_server:
+        asyncio.run(execute())
+    else:
+        with managed_showdown_server():
+            asyncio.run(execute())
+    return 0
+
+
+def _run_compare(args: argparse.Namespace) -> int:
+    comparison = compare_evaluation_reports(
+        args.baseline_report,
+        args.candidate_report,
+        output_path=args.output,
+    )
+    print(
+        json.dumps(
+            {
+                "conclusion": comparison["conclusion"],
+                "output_path": str(args.output),
+                "markdown_path": str(args.output.with_suffix(".md")),
+                "primary_outcome": comparison["primary_outcome"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -310,11 +428,21 @@ def main(argv: list[str] | None = None) -> int:
             return _run_prompt_benchmark(args)
         if args.command == "visualize":
             return _run_visualize(args)
+        if args.command == "evaluate":
+            return _run_evaluate(args)
+        if args.command == "compare":
+            return _run_compare(args)
     except PolicyFailure as exc:
         detail = exc.errors[-1] if exc.errors else str(exc)
         print(f"error: model policy failed: {detail}", file=sys.stderr)
         return 1
-    except (BaselineError, ShowdownError, ValueError, OSError) as exc:
+    except (
+        BaselineError,
+        EvaluationError,
+        ShowdownError,
+        ValueError,
+        OSError,
+    ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
