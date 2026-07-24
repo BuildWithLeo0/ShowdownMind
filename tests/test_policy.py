@@ -189,13 +189,13 @@ async def test_policy_rejects_unknown_reason_codes() -> None:
 @pytest.mark.asyncio
 async def test_policy_accepts_weather_and_accuracy_reason_codes() -> None:
     client = ScriptedModelClient(
-        [decision_json(reason_codes=["WEATHER", "ACCURACY"])]
+        [decision_json(reason_codes=["WEATHER", "ACCURACY", "STAB"])]
     )
 
     result = await SingleCallPolicy(client).decide(snapshot(), catalog())
 
     assert result.attempts == 1
-    assert result.decision.reason_codes == ("WEATHER", "ACCURACY")
+    assert result.decision.reason_codes == ("WEATHER", "ACCURACY", "STAB")
 
 
 @pytest.mark.asyncio

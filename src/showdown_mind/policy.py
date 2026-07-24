@@ -35,6 +35,7 @@ POLICY_MODES = ("direct", "tactical-tool")
 REASON_CODES = (
     "DAMAGE",
     "ACCURACY",
+    "STAB",
     "SURVIVAL",
     "TYPE_MATCHUP",
     "STATUS",
