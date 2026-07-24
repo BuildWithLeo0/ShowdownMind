@@ -19,6 +19,8 @@ def smoke_result() -> AgentSmokeResult:
         input_tokens=0,
         output_tokens=0,
         total_tokens=0,
+        model_input_characters=100,
+        prompt_format="compact",
         elapsed_seconds=0.1,
         decision_log="test.jsonl",
     )
@@ -34,6 +36,7 @@ def test_agent_smoke_does_not_require_live_model_timeout(monkeypatch) -> None:
         opponent="random",
         battles=1,
         decision_log=None,
+        prompt_format="compact",
         no_manage_server=True,
     )
 
@@ -47,7 +50,8 @@ def test_llm_smoke_passes_configured_timeout(monkeypatch) -> None:
         async def aclose(self) -> None:
             return None
 
-    async def fake_model_check(client):
+    async def fake_model_check(client, **kwargs):
+        calls["check_prompt_format"] = kwargs["prompt_format"]
         return Namespace(to_dict=dict)
 
     async def fake_run(*args, **kwargs):
@@ -62,8 +66,11 @@ def test_llm_smoke_passes_configured_timeout(monkeypatch) -> None:
         battles=1,
         battle_timeout=321.0,
         decision_log=None,
+        prompt_format="full",
         no_manage_server=True,
     )
 
     assert cli._run_llm_smoke(args) == 0
     assert calls["timeout_seconds"] == 321.0
+    assert calls["prompt_format"] == "full"
+    assert calls["check_prompt_format"] == "full"

@@ -23,6 +23,7 @@ from showdown_mind.storage import JsonlDecisionWriter
 @dataclass(frozen=True)
 class AgentSmokeResult:
     battle_format: str
+    prompt_format: str
     opponent: str
     requested_battles: int
     finished_battles: int
@@ -35,6 +36,7 @@ class AgentSmokeResult:
     input_tokens: int
     output_tokens: int
     total_tokens: int
+    model_input_characters: int
     elapsed_seconds: float
     decision_log: str
 
@@ -49,6 +51,7 @@ async def run_agent_battles(
     battles: int = 1,
     decision_log: Path | None = None,
     timeout_seconds: float | None = None,
+    prompt_format: str = "pruned",
 ) -> AgentSmokeResult:
     if battles < 1:
         raise ValueError("battles must be at least 1")
@@ -61,7 +64,7 @@ async def run_agent_battles(
     )
     writer = JsonlDecisionWriter(log_path)
     agent = ResearchPlayer(
-        SingleCallPolicy(model_client),
+        SingleCallPolicy(model_client, input_format=prompt_format),
         battle_format=BATTLE_FORMAT,
         max_concurrent_battles=1,
         save_replays=str(REPLAY_DIR),
@@ -96,6 +99,7 @@ async def run_agent_battles(
     opponent_wins = opponent.n_won_battles
     return AgentSmokeResult(
         battle_format=BATTLE_FORMAT,
+        prompt_format=f"{prompt_format}-v1",
         opponent=opponent_name,
         requested_battles=battles,
         finished_battles=finished,
@@ -119,6 +123,9 @@ async def run_agent_battles(
             usage.total_tokens
             for record in agent.decision_records
             for usage in record.usages
+        ),
+        model_input_characters=sum(
+            record.policy_input_characters for record in agent.decision_records
         ),
         elapsed_seconds=round(time.monotonic() - started, 3),
         decision_log=str(log_path),

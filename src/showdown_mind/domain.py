@@ -30,6 +30,29 @@ class BattleSnapshot:
     resources: dict[str, Any]
     legal_actions: tuple[LegalAction, ...]
 
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> BattleSnapshot:
+        return cls(
+            schema_version=str(value["schema_version"]),
+            battle_id=str(value["battle_id"]),
+            request_id=int(value["request_id"]),
+            turn=int(value["turn"]),
+            battle_format=str(value["battle_format"]),
+            own_side=dict(value["own_side"]),
+            opponent_side=dict(value["opponent_side"]),
+            field=dict(value["field"]),
+            resources=dict(value["resources"]),
+            legal_actions=tuple(
+                LegalAction(
+                    action_id=str(action["action_id"]),
+                    kind=str(action["kind"]),
+                    label=str(action["label"]),
+                    details=dict(action.get("details", {})),
+                )
+                for action in value["legal_actions"]
+            ),
+        )
+
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["legal_actions"] = [action.to_dict() for action in self.legal_actions]
@@ -73,6 +96,10 @@ class PolicyResult:
     usages: tuple[TokenUsage, ...]
     errors: tuple[str, ...]
     elapsed_seconds: float
+    policy_input_format: str
+    policy_input_hash: str
+    policy_input_characters: int
+    policy_input: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -88,6 +115,10 @@ class DecisionRecord:
     model_ids: tuple[str, ...]
     errors: tuple[str, ...]
     raw_responses: tuple[str, ...]
+    policy_input_format: str = ""
+    policy_input_hash: str = ""
+    policy_input_characters: int = 0
+    policy_input: dict[str, Any] = field(default_factory=dict)
     response_ids: tuple[str, ...] = ()
     usages: tuple[TokenUsage, ...] = ()
     confidence: float | None = None

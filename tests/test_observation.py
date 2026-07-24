@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from showdown_mind.domain import LegalAction
 from showdown_mind.observation import BattleSnapshotBuilder
+from showdown_mind.policy_input import POLICY_INPUT_FORMATS, compile_policy_input
 
 
 def pokemon(
@@ -86,6 +87,10 @@ def test_snapshot_is_whitelist_only_and_excludes_hidden_opponent_data() -> None:
     assert "shadowball" in encoded
     assert "SECRET_" not in encoded
     assert "must-not-leak" not in encoded
+    for format_name in POLICY_INPUT_FORMATS:
+        model_input = compile_policy_input(snapshot, format_name).canonical_json()
+        assert "SECRET_" not in model_input
+        assert "must-not-leak" not in model_input
 
 
 def test_opponent_without_explicit_revealed_flag_is_hidden() -> None:

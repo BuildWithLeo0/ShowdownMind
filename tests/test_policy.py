@@ -37,7 +37,8 @@ def snapshot() -> BattleSnapshot:
 
 
 @pytest.mark.asyncio
-async def test_policy_accepts_one_valid_json_decision() -> None:
+@pytest.mark.parametrize("input_format", ["full", "pruned", "compact"])
+async def test_policy_accepts_one_valid_json_decision(input_format: str) -> None:
     client = ScriptedModelClient(
         [
             json.dumps(
@@ -52,12 +53,16 @@ async def test_policy_accepts_one_valid_json_decision() -> None:
         model_id="test-model",
     )
 
-    result = await SingleCallPolicy(client).decide(snapshot(), catalog())
+    result = await SingleCallPolicy(
+        client,
+        input_format=input_format,
+    ).decide(snapshot(), catalog())
 
     assert result.decision.action_id == "move:tackle"
     assert result.attempts == 1
     assert result.model_ids == ("test-model",)
     assert result.errors == ()
+    assert result.policy_input_format == f"{input_format}-v1"
 
 
 @pytest.mark.asyncio
@@ -75,7 +80,7 @@ async def test_policy_repairs_once_after_invalid_output() -> None:
     assert len(result.errors) == 1
     repair_payload = json.loads(client.requests[1].user_prompt)
     assert repair_payload["valid_action_ids"] == ["move:tackle"]
-    assert repair_payload["battle"]["battle_id"] == "battle-test"
+    assert repair_payload["battle"]["schema"] == "pruned-v1"
 
 
 @pytest.mark.asyncio
@@ -120,3 +125,8 @@ async def test_policy_rejects_boolean_confidence() -> None:
 def test_policy_limits_repairs_to_one() -> None:
     with pytest.raises(ValueError, match="max_repairs"):
         SingleCallPolicy(ScriptedModelClient([]), max_repairs=2)
+
+
+def test_policy_rejects_unknown_input_format() -> None:
+    with pytest.raises(ValueError, match="input format"):
+        SingleCallPolicy(ScriptedModelClient([]), input_format="missing")

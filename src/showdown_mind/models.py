@@ -67,7 +67,10 @@ class DeterministicModelClient:
         moves = [action for action in actions if action["kind"] == "move"]
         selected = max(
             moves or actions,
-            key=lambda action: action.get("details", {}).get("base_power", 0),
+            key=lambda action: action.get(
+                "base_power",
+                action.get("details", {}).get("base_power", 0),
+            ),
         )
         content = json.dumps(
             {

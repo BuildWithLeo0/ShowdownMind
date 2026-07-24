@@ -20,6 +20,8 @@ from showdown_mind.models import (
     live_model_client_from_env,
 )
 from showdown_mind.policy import PolicyFailure
+from showdown_mind.policy_input import POLICY_INPUT_FORMATS
+from showdown_mind.prompt_benchmark import benchmark_decision_log
 from showdown_mind.showdown import (
     ShowdownError,
     managed_showdown_server,
@@ -67,6 +69,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     agent_smoke.add_argument("--battles", type=int, default=1)
     agent_smoke.add_argument(
+        "--prompt-format",
+        choices=POLICY_INPUT_FORMATS,
+        default="pruned",
+    )
+    agent_smoke.add_argument(
         "--decision-log",
         type=Path,
         help="write per-turn JSONL records to this path",
@@ -77,9 +84,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="require an already-running server instead of starting one",
     )
 
-    subparsers.add_parser(
+    model_check = subparsers.add_parser(
         "model-check",
         help="make one live model call and validate its decision",
+    )
+    model_check.add_argument(
+        "--prompt-format",
+        choices=POLICY_INPUT_FORMATS,
+        default="pruned",
     )
 
     llm_smoke = subparsers.add_parser(
@@ -92,6 +104,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="max-base-power",
     )
     llm_smoke.add_argument("--battles", type=int, default=1)
+    llm_smoke.add_argument(
+        "--prompt-format",
+        choices=POLICY_INPUT_FORMATS,
+        default="pruned",
+    )
     llm_smoke.add_argument(
         "--battle-timeout",
         type=float,
@@ -108,6 +125,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="require an already-running server instead of starting one",
     )
+
+    prompt_benchmark = subparsers.add_parser(
+        "prompt-benchmark",
+        help="compare full, pruned, and compact inputs from a decision log",
+    )
+    prompt_benchmark.add_argument("decision_log", type=Path)
     return parser
 
 
@@ -143,6 +166,7 @@ def _run_agent_smoke(args: argparse.Namespace) -> int:
             opponent_name=args.opponent,
             battles=args.battles,
             decision_log=args.decision_log,
+            prompt_format=args.prompt_format,
         )
         print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
 
@@ -154,11 +178,14 @@ def _run_agent_smoke(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_model_check() -> int:
+def _run_model_check(args: argparse.Namespace) -> int:
     async def execute() -> None:
         client = live_model_client_from_env()
         try:
-            result = await run_model_check(client)
+            result = await run_model_check(
+                client,
+                prompt_format=args.prompt_format,
+            )
         finally:
             await client.aclose()
         print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
@@ -169,7 +196,10 @@ def _run_model_check() -> int:
 
 def _run_llm_smoke(args: argparse.Namespace) -> int:
     async def execute(client: OpenAICompatibleModelClient) -> None:
-        check = await run_model_check(client)
+        check = await run_model_check(
+            client,
+            prompt_format=args.prompt_format,
+        )
         print(
             json.dumps(
                 {"model_check": check.to_dict()},
@@ -183,6 +213,7 @@ def _run_llm_smoke(args: argparse.Namespace) -> int:
             battles=args.battles,
             decision_log=args.decision_log,
             timeout_seconds=args.battle_timeout,
+            prompt_format=args.prompt_format,
         )
         print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
 
@@ -198,6 +229,12 @@ def _run_llm_smoke(args: argparse.Namespace) -> int:
     else:
         with managed_showdown_server():
             asyncio.run(run_and_close())
+    return 0
+
+
+def _run_prompt_benchmark(args: argparse.Namespace) -> int:
+    result = benchmark_decision_log(args.decision_log)
+    print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
     return 0
 
 
@@ -220,9 +257,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "agent-smoke":
             return _run_agent_smoke(args)
         if args.command == "model-check":
-            return _run_model_check()
+            return _run_model_check(args)
         if args.command == "llm-smoke":
             return _run_llm_smoke(args)
+        if args.command == "prompt-benchmark":
+            return _run_prompt_benchmark(args)
     except PolicyFailure as exc:
         detail = exc.errors[-1] if exc.errors else str(exc)
         print(f"error: model policy failed: {detail}", file=sys.stderr)

@@ -13,9 +13,16 @@ from showdown_mind.domain import (
     TokenUsage,
 )
 from showdown_mind.models import ModelCallError, ModelClient, ModelRequest
+from showdown_mind.policy_input import (
+    POLICY_INPUT_FORMATS,
+    CompiledPolicyInput,
+    compile_policy_input,
+)
 
 SYSTEM_PROMPT = """You choose one legal action in a Pokémon Showdown battle.
 Use only the player-visible state in the request.
+The input schema is full-v1, pruned-v1, or compact-v1.
+In pruned-v1 and compact-v1, omitted optional values are false, empty, or unknown.
 Return one JSON object and no other text.
 The action_id must exactly match a legal action_id."""
 
@@ -32,6 +39,7 @@ class PolicyFailure(RuntimeError):
         errors: tuple[str, ...],
         attempts: int,
         elapsed_seconds: float,
+        policy_input: CompiledPolicyInput,
     ):
         super().__init__(message)
         self.raw_responses = raw_responses
@@ -41,6 +49,7 @@ class PolicyFailure(RuntimeError):
         self.errors = errors
         self.attempts = attempts
         self.elapsed_seconds = elapsed_seconds
+        self.policy_input = policy_input
 
 
 class SingleCallPolicy:
@@ -52,21 +61,29 @@ class SingleCallPolicy:
         *,
         timeout_seconds: float = 45.0,
         max_repairs: int = 1,
+        input_format: str = "pruned",
     ):
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
         if max_repairs not in (0, 1):
             raise ValueError("max_repairs must be 0 or 1")
+        if input_format not in POLICY_INPUT_FORMATS:
+            choices = ", ".join(POLICY_INPUT_FORMATS)
+            raise ValueError(
+                f"Unknown policy input format {input_format!r}; "
+                f"choose one of: {choices}"
+            )
         self._model_client = model_client
         self._timeout_seconds = timeout_seconds
         self._max_repairs = max_repairs
+        self._input_format = input_format
 
     async def decide(
         self,
         snapshot: BattleSnapshot,
         catalog: ActionCatalog,
     ) -> PolicyResult:
-        payload = snapshot.to_dict()
+        policy_input = compile_policy_input(snapshot, self._input_format)
         raw_responses: list[str] = []
         model_ids: list[str] = []
         response_ids: list[str] = []
@@ -75,7 +92,7 @@ class SingleCallPolicy:
         started = time.monotonic()
         request = ModelRequest(
             system_prompt=SYSTEM_PROMPT,
-            user_prompt=json.dumps(payload, ensure_ascii=False, sort_keys=True),
+            user_prompt=policy_input.canonical_json(),
         )
 
         for attempt in range(self._max_repairs + 1):
@@ -97,6 +114,7 @@ class SingleCallPolicy:
                         errors=errors,
                         attempts=attempt + 1,
                         started=started,
+                        policy_input=policy_input,
                     )
                 # No model output exists to repair. Retry the same request once.
                 continue
@@ -122,9 +140,10 @@ class SingleCallPolicy:
                         errors=errors,
                         attempts=attempt + 1,
                         started=started,
+                        policy_input=policy_input,
                     )
                 request = self._repair_request(
-                    snapshot=snapshot,
+                    policy_input=policy_input,
                     invalid_response=response.content,
                     error=error,
                 )
@@ -139,6 +158,10 @@ class SingleCallPolicy:
                 usages=tuple(usages),
                 errors=tuple(errors),
                 elapsed_seconds=round(time.monotonic() - started, 6),
+                policy_input_format=policy_input.format_name,
+                policy_input_hash=policy_input.fingerprint(),
+                policy_input_characters=policy_input.characters,
+                policy_input=policy_input.payload,
             )
 
         raise AssertionError("unreachable")
@@ -154,6 +177,7 @@ class SingleCallPolicy:
         errors: list[str],
         attempts: int,
         started: float,
+        policy_input: CompiledPolicyInput,
     ) -> None:
         raise PolicyFailure(
             "Policy did not produce a valid decision",
@@ -164,6 +188,7 @@ class SingleCallPolicy:
             errors=tuple(errors),
             attempts=attempts,
             elapsed_seconds=round(time.monotonic() - started, 6),
+            policy_input=policy_input,
         ) from cause
 
     @staticmethod
@@ -206,15 +231,16 @@ class SingleCallPolicy:
     @staticmethod
     def _repair_request(
         *,
-        snapshot: BattleSnapshot,
+        policy_input: CompiledPolicyInput,
         invalid_response: str,
         error: str,
     ) -> ModelRequest:
-        valid_ids = [action.action_id for action in snapshot.legal_actions]
+        actions = policy_input.payload["legal_actions"]
+        valid_ids = [str(action["action_id"]) for action in actions]
         repair_payload: dict[str, Any] = {
             "error": error,
             "invalid_response": invalid_response,
-            "battle": snapshot.to_dict(),
+            "battle": policy_input.payload,
             "valid_action_ids": valid_ids,
             "instruction": "Return corrected JSON only.",
         }

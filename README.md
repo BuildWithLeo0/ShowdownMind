@@ -119,6 +119,32 @@ network request. Override it with `--battle-timeout`. The final result reports
 model calls and input, output, and total tokens; per-turn response IDs and usage
 are stored in the JSONL decision log.
 
+### Choose and benchmark the model input
+
+Live and deterministic Agent commands use `pruned-v1` by default. It keeps
+readable field names but removes empty values and execution-only metadata.
+`full-v1` and the more aggressive `compact-v1` remain available for controlled
+experiments:
+
+```bash
+uv run --env-file .env showdown-mind model-check --prompt-format pruned
+uv run --env-file .env showdown-mind llm-smoke --prompt-format full
+```
+
+Compare all three formats offline using any decision log:
+
+```bash
+uv run showdown-mind prompt-benchmark \
+  .runtime/decisions/gpt-5.6-luna-final.jsonl
+```
+
+Each decision record contains the authoritative full snapshot plus the exact
+compiled model input, its version, character count, and SHA-256 hash. In the
+first 23-decision live log, `pruned-v1` reduced serialized characters by 31.16%.
+On repeated live connectivity checks it used 214 provider-reported input
+tokens, compared with 275 for `full-v1`. `compact-v1` used fewer characters but
+more reported tokens on this provider, so it is not the default.
+
 ## Tests
 
 ```bash

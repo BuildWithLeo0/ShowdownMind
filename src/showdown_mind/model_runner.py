@@ -15,6 +15,8 @@ from showdown_mind.policy import SingleCallPolicy
 @dataclass(frozen=True)
 class ModelCheckResult:
     model_id: str
+    prompt_format: str
+    model_input_characters: int
     action_id: str
     attempts: int
     input_tokens: int
@@ -25,7 +27,11 @@ class ModelCheckResult:
         return asdict(self)
 
 
-async def run_model_check(model_client: ModelClient) -> ModelCheckResult:
+async def run_model_check(
+    model_client: ModelClient,
+    *,
+    prompt_format: str = "pruned",
+) -> ModelCheckResult:
     catalog = _check_catalog()
     snapshot = BattleSnapshot(
         schema_version="1.0",
@@ -53,9 +59,14 @@ async def run_model_check(model_client: ModelClient) -> ModelCheckResult:
         },
         legal_actions=catalog.actions,
     )
-    result = await SingleCallPolicy(model_client).decide(snapshot, catalog)
+    result = await SingleCallPolicy(
+        model_client,
+        input_format=prompt_format,
+    ).decide(snapshot, catalog)
     return ModelCheckResult(
         model_id=result.model_ids[-1],
+        prompt_format=result.policy_input_format,
+        model_input_characters=result.policy_input_characters,
         action_id=result.decision.action_id,
         attempts=result.attempts,
         input_tokens=sum(usage.input_tokens for usage in result.usages),

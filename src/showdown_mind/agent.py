@@ -60,6 +60,10 @@ class ResearchPlayer(Player):
         reason_codes: tuple[str, ...] = ()
         short_rationale = ""
         elapsed_seconds = 0.0
+        policy_input_format = ""
+        policy_input_hash = ""
+        policy_input_characters = 0
+        policy_input: dict[str, Any] = {}
 
         try:
             result = await self._policy.decide(snapshot, catalog)
@@ -74,6 +78,10 @@ class ResearchPlayer(Player):
             reason_codes = result.decision.reason_codes
             short_rationale = result.decision.short_rationale
             elapsed_seconds = result.elapsed_seconds
+            policy_input_format = result.policy_input_format
+            policy_input_hash = result.policy_input_hash
+            policy_input_characters = result.policy_input_characters
+            policy_input = result.policy_input
         except PolicyFailure as exc:
             fallback_used = True
             errors = exc.errors
@@ -83,6 +91,10 @@ class ResearchPlayer(Player):
             usages = exc.usages
             attempts = exc.attempts
             elapsed_seconds = exc.elapsed_seconds
+            policy_input_format = exc.policy_input.format_name
+            policy_input_hash = exc.policy_input.fingerprint()
+            policy_input_characters = exc.policy_input.characters
+            policy_input = exc.policy_input.payload
             action_id = deterministic_fallback_action_id(
                 seed=self._fallback_seed,
                 battle_id=snapshot.battle_id,
@@ -102,6 +114,10 @@ class ResearchPlayer(Player):
             model_ids=model_ids,
             errors=errors,
             raw_responses=raw_responses,
+            policy_input_format=policy_input_format,
+            policy_input_hash=policy_input_hash,
+            policy_input_characters=policy_input_characters,
+            policy_input=policy_input,
             response_ids=response_ids,
             usages=usages,
             confidence=confidence,

@@ -78,6 +78,19 @@ async def test_duplicate_request_reuses_the_first_decision() -> None:
     assert first is second
     assert len(client.requests) == 1
     assert len(player.decision_records) == 1
+    assert player.decision_records[0].policy_input_format == "pruned-v1"
+    assert player.decision_records[0].policy_input_characters > 0
+    assert player.decision_records[0].policy_input["schema"] == "pruned-v1"
+    policy_input = json.dumps(
+        player.decision_records[0].policy_input,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    assert (
+        player.decision_records[0].policy_input_hash
+        == "sha256:" + hashlib.sha256(policy_input.encode()).hexdigest()
+    )
 
 
 @pytest.mark.asyncio
