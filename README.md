@@ -3,15 +3,17 @@
 ShowdownMind is a research project for building and evaluating an LLM agent that
 plays Pokémon Showdown without access to hidden opponent information.
 
-The first milestone is deliberately small:
+The project currently has two completed foundations:
 
 1. run a pinned Pokémon Showdown server locally;
 2. connect with `poke-env`;
 3. run built-in baseline players;
-4. record reproducible smoke-test results.
+4. give a Policy-first agent a whitelist-only battle snapshot and legal actions;
+5. validate one model decision, allow one repair, and fall back safely;
+6. record every visible snapshot, model response, action, and fallback in JSONL.
 
-LLM decision-making, belief tracking, damage tools, and planning are introduced
-in later milestones so their effects can be measured separately.
+The next milestone is a real LLM provider adapter. Belief tracking, damage
+tools, and planning stay separate so their effects can be measured later.
 
 ## Requirements
 
@@ -56,11 +58,41 @@ uv run showdown-mind showdown start
 The local server binds only to `127.0.0.1:8765`; port 8000 is intentionally
 avoided because it is commonly used by other local development services.
 
+## Run the Policy-first agent
+
+```bash
+uv run showdown-mind agent-smoke --battles 1
+```
+
+This command tests the complete Agent path against a built-in opponent:
+
+```text
+visible battle state
+  -> legal action catalog
+  -> model interface
+  -> output validation
+  -> Showdown action
+  -> per-turn JSONL log
+```
+
+`agent-smoke` deliberately uses a deterministic test double that selects the
+highest-base-power legal move. It verifies the model boundary but is not an
+LLM and should not be reported as an LLM result. The output prints the decision
+log path under `.runtime/decisions/`.
+
 ## Tests
 
 ```bash
 uv run pytest
 ```
 
-The project design is documented in
-[`docs/plans/2026-07-24-pokemon-showdown-agent-design.md`](docs/plans/2026-07-24-pokemon-showdown-agent-design.md).
+Run real local battle integration tests explicitly:
+
+```bash
+SHOWDOWN_MIND_RUN_INTEGRATION=1 uv run pytest tests/test_integration_smoke.py
+```
+
+The design is documented in the
+[plain-language plan](docs/plans/2026-07-24-pokemon-showdown-agent-design.md)
+and the
+[technical plan](docs/plans/2026-07-24-pokemon-showdown-agent-technical-design.md).
