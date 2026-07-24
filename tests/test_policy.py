@@ -6,8 +6,12 @@ from poke_env.player.battle_order import SingleBattleOrder
 
 from showdown_mind.actions import ActionCatalog, CatalogEntry
 from showdown_mind.domain import BattleSnapshot, LegalAction
-from showdown_mind.models import ScriptedModelClient
-from showdown_mind.policy import PolicyFailure, SingleCallPolicy
+from showdown_mind.models import ACTION_TOOL_NAME, TACTICAL_TOOL_NAME, ScriptedModelClient
+from showdown_mind.policy import (
+    PolicyFailure,
+    SingleCallPolicy,
+    TacticalToolPolicy,
+)
 
 
 def catalog() -> ActionCatalog:
@@ -158,17 +162,13 @@ async def test_policy_requires_a_short_public_rationale() -> None:
 
 @pytest.mark.asyncio
 async def test_policy_enforces_rationale_length_limit() -> None:
-    client = ScriptedModelClient(
-        [
-            decision_json(short_rationale="x" * 241),
-            decision_json(short_rationale="Choose the safest legal move."),
-        ]
-    )
+    client = ScriptedModelClient([decision_json(short_rationale="x" * 241)])
 
     result = await SingleCallPolicy(client).decide(snapshot(), catalog())
 
-    assert result.attempts == 2
-    assert "at most 240 characters" in result.errors[0]
+    assert result.attempts == 1
+    assert result.errors == ()
+    assert result.decision.short_rationale == "x" * 240
 
 
 @pytest.mark.asyncio
@@ -184,6 +184,91 @@ async def test_policy_rejects_unknown_reason_codes() -> None:
 
     assert result.attempts == 2
     assert "unknown reason_codes" in result.errors[0]
+
+
+@pytest.mark.asyncio
+async def test_policy_accepts_weather_and_accuracy_reason_codes() -> None:
+    client = ScriptedModelClient(
+        [decision_json(reason_codes=["WEATHER", "ACCURACY"])]
+    )
+
+    result = await SingleCallPolicy(client).decide(snapshot(), catalog())
+
+    assert result.attempts == 1
+    assert result.decision.reason_codes == ("WEATHER", "ACCURACY")
+
+
+@pytest.mark.asyncio
+async def test_tactical_policy_executes_two_native_tools_in_order() -> None:
+    client = ScriptedModelClient(["{}", decision_json()])
+    battle = type(
+        "Battle",
+        (),
+        {
+            "active_pokemon": None,
+            "opponent_active_pokemon": None,
+        },
+    )()
+
+    result = await TacticalToolPolicy(client).decide(
+        snapshot(),
+        catalog(),
+        battle=battle,
+    )
+
+    assert result.decision.action_id == "move:tackle"
+    assert result.model_calls == 2
+    assert result.expected_model_calls == 2
+    assert result.attempts == 1
+    assert result.tool_names == (TACTICAL_TOOL_NAME, ACTION_TOOL_NAME)
+    assert result.tactical_analysis["schema"] == "tactical-analysis-v1"
+    assert result.tool_executions[0]["tool_name"] == TACTICAL_TOOL_NAME
+    assert client.requests[0].tool.name == TACTICAL_TOOL_NAME
+    assert client.requests[1].tool.name == ACTION_TOOL_NAME
+    history = client.requests[1].tool_history
+    assert len(history) == 1
+    assert history[0].tool_name == TACTICAL_TOOL_NAME
+    assert history[0].tool_call_id == "scripted-tool-call-1"
+    assert "tactical-analysis-v1" in history[0].result
+
+
+@pytest.mark.asyncio
+async def test_tactical_policy_retries_invalid_tool_arguments() -> None:
+    client = ScriptedModelClient(
+        [
+            '{"unexpected":true}',
+            "{}",
+            decision_json(),
+        ]
+    )
+    battle = type(
+        "Battle",
+        (),
+        {
+            "active_pokemon": None,
+            "opponent_active_pokemon": None,
+        },
+    )()
+
+    result = await TacticalToolPolicy(client).decide(
+        snapshot(),
+        catalog(),
+        battle=battle,
+    )
+
+    assert result.model_calls == 3
+    assert result.expected_model_calls == 2
+    assert result.attempts == 2
+    assert "accepts no arguments" in result.errors[0]
+
+
+@pytest.mark.asyncio
+async def test_tactical_policy_requires_live_battle_context() -> None:
+    with pytest.raises(ValueError, match="current battle"):
+        await TacticalToolPolicy(ScriptedModelClient([])).decide(
+            snapshot(),
+            catalog(),
+        )
 
 
 def test_policy_limits_repairs_to_one() -> None:

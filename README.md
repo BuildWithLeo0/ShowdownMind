@@ -137,6 +137,36 @@ required public sentence capped at 240 characters, not private chain-of-thought.
 The program validates every argument again before resolving the ID into a real
 `poke-env` battle order.
 
+### Use the tactical calculator tool
+
+The `tactical-tool` policy runs a bounded two-stage native tool workflow:
+
+```text
+analyze_battle_options()
+  -> host calculates player-visible tactical facts
+  -> tool result is returned with the matching tool_call_id
+  -> choose_battle_action(...)
+  -> whitelist validation and Showdown action
+```
+
+It estimates relative damage, STAB, type effectiveness, accuracy, speed order,
+priority, and switch matchups. It does not inspect unrevealed opponent data.
+Try it with the deterministic model boundary or the configured live model:
+
+```bash
+uv run showdown-mind agent-smoke \
+  --policy-mode tactical-tool \
+  --battles 1
+
+uv run --env-file .env showdown-mind llm-smoke \
+  --policy-mode tactical-tool \
+  --opponent simple-heuristics \
+  --battles 1
+```
+
+`direct` remains the default so earlier experiments stay reproducible. A
+tactical candidate evaluation must select the mode explicitly.
+
 For the official DeepSeek V4 API, use:
 
 ```dotenv
@@ -199,8 +229,9 @@ Showdown, creating files, or calling the model:
 
 ```bash
 uv run showdown-mind evaluate \
-  --name direct-v0 \
-  --output-dir .runtime/evaluations/direct-v0
+  --name tactical-tool-v1 \
+  --output-dir .runtime/evaluations/tactical-tool-v1 \
+  --policy-mode tactical-tool
 ```
 
 The default matrix is 30 live battles: ten against each built-in opponent.
@@ -209,8 +240,9 @@ Exact token cost depends on battle length and is not known in advance. Add
 
 ```bash
 uv run --env-file .env showdown-mind evaluate \
-  --name direct-v0 \
-  --output-dir .runtime/evaluations/direct-v0 \
+  --name tactical-tool-v1 \
+  --output-dir .runtime/evaluations/tactical-tool-v1 \
+  --policy-mode tactical-tool \
   --run
 ```
 

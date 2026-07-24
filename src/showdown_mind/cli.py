@@ -27,7 +27,7 @@ from showdown_mind.models import (
     OpenAICompatibleModelClient,
     live_model_client_from_env,
 )
-from showdown_mind.policy import PolicyFailure
+from showdown_mind.policy import POLICY_MODES, PolicyFailure
 from showdown_mind.policy_input import POLICY_INPUT_FORMATS
 from showdown_mind.prompt_benchmark import benchmark_decision_log
 from showdown_mind.showdown import (
@@ -83,6 +83,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="pruned",
     )
     agent_smoke.add_argument(
+        "--policy-mode",
+        choices=POLICY_MODES,
+        default="direct",
+    )
+    agent_smoke.add_argument(
         "--decision-log",
         type=Path,
         help="write per-turn JSONL records to this path",
@@ -102,6 +107,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=POLICY_INPUT_FORMATS,
         default="pruned",
     )
+    model_check.add_argument(
+        "--policy-mode",
+        choices=POLICY_MODES,
+        default="direct",
+    )
 
     llm_smoke = subparsers.add_parser(
         "llm-smoke",
@@ -117,6 +127,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--prompt-format",
         choices=POLICY_INPUT_FORMATS,
         default="pruned",
+    )
+    llm_smoke.add_argument(
+        "--policy-mode",
+        choices=POLICY_MODES,
+        default="direct",
     )
     llm_smoke.add_argument(
         "--battle-timeout",
@@ -196,6 +211,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="pruned",
     )
     evaluate.add_argument(
+        "--policy-mode",
+        choices=POLICY_MODES,
+        default="direct",
+    )
+    evaluate.add_argument(
         "--run-timeout",
         type=float,
         help="maximum seconds for each opponent/repeat batch",
@@ -254,6 +274,7 @@ def _run_agent_smoke(args: argparse.Namespace) -> int:
             battles=args.battles,
             decision_log=args.decision_log,
             prompt_format=args.prompt_format,
+            policy_mode=getattr(args, "policy_mode", "direct"),
         )
         print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
 
@@ -272,6 +293,7 @@ def _run_model_check(args: argparse.Namespace) -> int:
             result = await run_model_check(
                 client,
                 prompt_format=args.prompt_format,
+                policy_mode=getattr(args, "policy_mode", "direct"),
             )
         finally:
             await client.aclose()
@@ -286,6 +308,7 @@ def _run_llm_smoke(args: argparse.Namespace) -> int:
         check = await run_model_check(
             client,
             prompt_format=args.prompt_format,
+            policy_mode=getattr(args, "policy_mode", "direct"),
         )
         print(
             json.dumps(
@@ -301,6 +324,7 @@ def _run_llm_smoke(args: argparse.Namespace) -> int:
             decision_log=args.decision_log,
             timeout_seconds=args.battle_timeout,
             prompt_format=args.prompt_format,
+            policy_mode=getattr(args, "policy_mode", "direct"),
         )
         print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
 
@@ -347,6 +371,7 @@ def _run_evaluate(args: argparse.Namespace) -> int:
         battles_per_opponent=args.battles_per_opponent,
         repeats=args.repeats,
         prompt_format=args.prompt_format,
+        policy_mode=getattr(args, "policy_mode", "direct"),
         run_timeout_seconds=args.run_timeout,
     )
     if not args.run:

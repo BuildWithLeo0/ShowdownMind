@@ -381,6 +381,19 @@ def test_quality_gate_rejects_fallback_heavy_results() -> None:
     assert len(quality["violations"]) == 3
 
 
+def test_tactical_quality_requires_executed_calculator_tool() -> None:
+    metrics = aggregate_runs([run_entry("random", ["win"] * 3)])
+    metrics["tactical_tool_coverage"] = 0.5
+
+    quality = assess_quality(metrics, policy_mode="tactical-tool")
+
+    assert quality["status"] == "invalid"
+    assert any(
+        "tactical_tool_coverage" in violation
+        for violation in quality["violations"]
+    )
+
+
 def test_comparison_detects_clear_improvement() -> None:
     baseline = report("v0", ["loss"] * 30)
     candidate = report("v1", ["win"] * 30)

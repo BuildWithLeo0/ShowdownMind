@@ -9,6 +9,7 @@ from showdown_mind.models import (
     ModelCallError,
     ModelTool,
     OpenAICompatibleModelClient,
+    ToolExchange,
     live_model_client_from_env,
 )
 
@@ -124,6 +125,45 @@ async def test_openai_compatible_client_can_disable_provider_thinking() -> None:
 
     request = sdk_client.chat.completions.create.await_args.kwargs
     assert request["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_client_serializes_native_tool_history() -> None:
+    sdk_client = fake_sdk_client()
+    client = OpenAICompatibleModelClient(
+        api_key="test-key",
+        base_url="https://api.deepseek.com",
+        model="deepseek-v4-flash",
+        thinking_mode="disabled",
+        client=sdk_client,
+    )
+
+    await client.complete(
+        ModelRequest(
+            system_prompt="Use the result.",
+            user_prompt="{}",
+            tool=battle_tool(),
+            tool_history=(
+                ToolExchange(
+                    tool_call_id="call-analysis",
+                    tool_name="analyze_battle_options",
+                    arguments="{}",
+                    result='{"best_damage_action_ids":["move:thunderbolt"]}',
+                ),
+            ),
+        )
+    )
+
+    messages = sdk_client.chat.completions.create.await_args.kwargs["messages"]
+    assert [message["role"] for message in messages] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+    ]
+    assert messages[2]["content"] == ""
+    assert messages[2]["tool_calls"][0]["id"] == "call-analysis"
+    assert messages[3]["tool_call_id"] == "call-analysis"
 
 
 @pytest.mark.asyncio

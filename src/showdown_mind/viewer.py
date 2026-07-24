@@ -203,6 +203,12 @@ def _viewer_decision(record: dict[str, Any], index: int) -> dict[str, Any]:
     errors = record.get("errors", [])
     if not isinstance(errors, list):
         errors = []
+    tool_executions = record.get("tool_executions", [])
+    if not isinstance(tool_executions, list):
+        tool_executions = []
+    tactical_analysis = record.get("tactical_analysis", {})
+    if not isinstance(tactical_analysis, dict):
+        tactical_analysis = {}
     return {
         "sequence": index,
         "turn": int(record.get("turn", snapshot.get("turn", 0))),
@@ -213,15 +219,32 @@ def _viewer_decision(record: dict[str, Any], index: int) -> dict[str, Any]:
         "reason_codes": list(record.get("reason_codes") or []),
         "short_rationale": str(record.get("short_rationale") or ""),
         "attempts": int(record.get("attempts", 0)),
+        "model_calls": int(
+            record.get("model_calls") or record.get("attempts", 0)
+        ),
+        "expected_model_calls": int(record.get("expected_model_calls", 1)),
         "fallback_used": bool(record.get("fallback_used", False)),
         "errors": [redact_secrets(str(error)) for error in errors],
         "model_ids": [str(model) for model in record.get("model_ids") or []],
         "tool": {
             "name": str(record.get("tool_name") or ACTION_TOOL_NAME),
+            "names": [
+                str(tool_name) for tool_name in record.get("tool_names") or []
+            ],
             "call_ids": [
                 str(tool_call_id) for tool_call_id in record.get("tool_call_ids") or []
             ],
+            "executions": [
+                {
+                    "tool_name": str(execution.get("tool_name") or ""),
+                    "tool_call_id": str(execution.get("tool_call_id") or ""),
+                    "arguments": execution.get("arguments", {}),
+                }
+                for execution in tool_executions
+                if isinstance(execution, dict)
+            ],
         },
+        "tactical_analysis": tactical_analysis,
         "usage": {
             "input_tokens": sum(
                 int(usage.get("input_tokens", 0)) for usage in valid_usages

@@ -21,7 +21,33 @@ def decision(battle_id: str, *, turn: int = 1) -> dict:
         "errors": ["provider mentioned sk-abcdefghijk"],
         "model_ids": ["test-model"],
         "tool_name": "choose_battle_action",
-        "tool_call_ids": ["call-test"],
+        "tool_names": ["analyze_battle_options", "choose_battle_action"],
+        "tool_call_ids": ["call-analysis", "call-test"],
+        "model_calls": 2,
+        "expected_model_calls": 2,
+        "tool_executions": [
+            {
+                "tool_name": "analyze_battle_options",
+                "tool_call_id": "call-analysis",
+                "arguments": {},
+                "result": {"private": "not-duplicated"},
+            }
+        ],
+        "tactical_analysis": {
+            "schema": "tactical-analysis-v1",
+            "speed_relation": "faster",
+            "best_damage_action_ids": ["move:thunderbolt"],
+            "best_switch_action_ids": [],
+            "actions": [
+                {
+                    "action_id": "move:thunderbolt",
+                    "kind": "move",
+                    "type_multiplier": 2,
+                    "relative_damage": 1,
+                    "move_order": "likely_first",
+                }
+            ],
+        },
         "raw_responses": ["raw-response-must-not-be-embedded"],
         "policy_input": {"private-shape": "must-not-be-embedded"},
         "policy_input_format": "pruned-v1",
@@ -142,14 +168,27 @@ def test_builds_single_file_viewer_with_sanitized_decisions(tmp_path) -> None:
     assert payload["replay_sync"]["agent_side"] == "p1"
     assert payload["replay_sync"]["anchored_decisions"] == 1
     assert payload["decisions"][0]["errors"] == ["provider mentioned [REDACTED]"]
-    assert payload["decisions"][0]["tool"] == {
-        "name": "choose_battle_action",
-        "call_ids": ["call-test"],
-    }
+    assert payload["decisions"][0]["tool"]["name"] == "choose_battle_action"
+    assert payload["decisions"][0]["tool"]["names"] == [
+        "analyze_battle_options",
+        "choose_battle_action",
+    ]
+    assert payload["decisions"][0]["tool"]["call_ids"] == [
+        "call-analysis",
+        "call-test",
+    ]
+    assert payload["decisions"][0]["tool"]["executions"][0]["tool_name"] == (
+        "analyze_battle_options"
+    )
+    assert payload["decisions"][0]["model_calls"] == 2
+    assert payload["decisions"][0]["tactical_analysis"]["schema"] == (
+        "tactical-analysis-v1"
+    )
     assert "NATIVE TOOL CALL" in html
     assert "choose_battle_action" in encoded_payload
     assert "raw-response-must-not-be-embedded" not in encoded_payload
     assert "private-shape" not in encoded_payload
+    assert "not-duplicated" not in encoded_payload
 
 
 def test_discovers_and_prefers_research_player_replay(tmp_path) -> None:

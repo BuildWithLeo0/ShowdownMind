@@ -47,6 +47,7 @@ class ExperimentSpec:
     requested_battles: int
     prompt_format: str
     timeout_seconds: float
+    policy_mode: str = "direct"
 
 
 class ExperimentArtifactWriter:
@@ -73,7 +74,10 @@ class ExperimentArtifactWriter:
                 "requested_battles": spec.requested_battles,
                 "timeout_seconds": spec.timeout_seconds,
             },
-            "policy": {"input_format": spec.prompt_format},
+            "policy": {
+                "input_format": spec.prompt_format,
+                "mode": spec.policy_mode,
+            },
             "model": {
                 "model_id": str(
                     getattr(model_client, "model_id", type(model_client).__name__)

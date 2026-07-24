@@ -13,7 +13,8 @@ from showdown_mind.agent_runner import AgentSmokeResult, run_agent_battles
 from showdown_mind.baselines import BASELINE_TYPES, BATTLE_FORMAT
 from showdown_mind.experiment_artifacts import git_state, redact_secrets
 from showdown_mind.model_runner import ModelCheckResult, run_model_check
-from showdown_mind.models import ModelClient
+from showdown_mind.models import ACTION_TOOL_NAME, TACTICAL_TOOL_NAME, ModelClient
+from showdown_mind.policy import POLICY_MODES
 from showdown_mind.policy_input import POLICY_INPUT_FORMATS
 
 EVALUATION_SCHEMA_VERSION = "1.0"
@@ -25,12 +26,14 @@ FINAL_QUALITY_THRESHOLDS = {
     "max_fallback_rate": 0.05,
     "max_decision_error_rate": 0.10,
     "min_tool_call_coverage": 0.95,
+    "min_tactical_tool_coverage": 0.95,
     "min_rationale_coverage": 0.95,
 }
 HARD_STOP_THRESHOLDS = {
     "max_fallback_rate": 0.20,
     "max_decision_error_rate": 0.30,
     "min_tool_call_coverage": 0.70,
+    "min_tactical_tool_coverage": 0.70,
     "min_rationale_coverage": 0.70,
 }
 
@@ -54,6 +57,7 @@ class EvaluationPlan:
     battles_per_opponent: int = 10
     repeats: int = 1
     prompt_format: str = "pruned"
+    policy_mode: str = "direct"
     run_timeout_seconds: float | None = None
     stop_on_quality_failure: bool = True
 
@@ -73,6 +77,8 @@ class EvaluationPlan:
             raise ValueError("repeats must be at least 1")
         if self.prompt_format not in POLICY_INPUT_FORMATS:
             raise ValueError(f"unknown prompt format: {self.prompt_format}")
+        if self.policy_mode not in POLICY_MODES:
+            raise ValueError(f"unknown policy mode: {self.policy_mode}")
         if self.run_timeout_seconds is not None and self.run_timeout_seconds <= 0:
             raise ValueError("run_timeout_seconds must be positive")
 
@@ -102,6 +108,7 @@ class EvaluationPlan:
             "total_runs": self.total_runs,
             "total_battles": self.total_battles,
             "prompt_format": f"{self.prompt_format}-v1",
+            "policy_mode": self.policy_mode,
             "run_timeout_seconds": self.effective_run_timeout_seconds,
             "stop_on_quality_failure": self.stop_on_quality_failure,
             "quality_thresholds": FINAL_QUALITY_THRESHOLDS,
@@ -151,6 +158,7 @@ async def run_evaluation(
         check = await connectivity_checker(
             model_client,
             prompt_format=plan.prompt_format,
+            policy_mode=plan.policy_mode,
         )
         preflight = check.to_dict()
         for opponent in plan.opponents:
@@ -164,6 +172,7 @@ async def run_evaluation(
                     decision_log=decision_log,
                     timeout_seconds=plan.effective_run_timeout_seconds,
                     prompt_format=plan.prompt_format,
+                    policy_mode=plan.policy_mode,
                 )
                 completed_run = _completed_run(
                     opponent=opponent,
@@ -175,6 +184,7 @@ async def run_evaluation(
                 hard_quality = assess_quality(
                     aggregate_runs([completed_run]),
                     thresholds=HARD_STOP_THRESHOLDS,
+                    policy_mode=plan.policy_mode,
                 )
                 completed_run["quality"] = hard_quality
                 if plan.stop_on_quality_failure and hard_quality["status"] == "invalid":
@@ -254,8 +264,10 @@ def summarize_decision_log(path: Path) -> dict[str, Any]:
         records.append(value)
 
     decisions = len(records)
-    retries = sum(max(0, int(record.get("attempts", 0)) - 1) for record in records)
-    decisions_with_retry = sum(int(record.get("attempts", 0)) > 1 for record in records)
+    retries = 0
+    decisions_with_retry = 0
+    model_calls = 0
+    expected_model_calls = 0
     fallbacks = sum(bool(record.get("fallback_used")) for record in records)
     decisions_with_errors = sum(bool(record.get("errors")) for record in records)
     transport_errors = 0
@@ -266,10 +278,21 @@ def summarize_decision_log(path: Path) -> dict[str, Any]:
     latency = 0.0
     confidences: list[float] = []
     tool_calls = 0
+    tactical_tool_calls = 0
     rationales = 0
     reason_counts: Counter[str] = Counter()
 
     for record in records:
+        expected_calls = int(record.get("expected_model_calls", 1))
+        actual_calls = int(
+            record.get("model_calls")
+            or record.get("attempts", 0)
+        )
+        model_calls += actual_calls
+        expected_model_calls += expected_calls
+        retry_calls = max(0, int(record.get("attempts", 0)) - 1)
+        retries += retry_calls
+        decisions_with_retry += retry_calls > 0
         errors = [str(error) for error in record.get("errors") or []]
         for error in errors:
             if "ModelCallError" in error or "TimeoutError" in error:
@@ -286,7 +309,19 @@ def summarize_decision_log(path: Path) -> dict[str, Any]:
         confidence = record.get("confidence")
         if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
             confidences.append(float(confidence))
-        tool_calls += bool(record.get("tool_call_ids"))
+        tool_names = [str(name) for name in record.get("tool_names") or []]
+        if not tool_names and record.get("tool_call_ids"):
+            tool_names = [str(record.get("tool_name") or ACTION_TOOL_NAME)]
+        tool_calls += ACTION_TOOL_NAME in tool_names
+        executions = [
+            execution
+            for execution in record.get("tool_executions") or []
+            if isinstance(execution, dict)
+        ]
+        tactical_tool_calls += any(
+            execution.get("tool_name") == TACTICAL_TOOL_NAME
+            for execution in executions
+        )
         rationales += bool(str(record.get("short_rationale") or "").strip())
         reason_counts.update(str(code) for code in record.get("reason_codes") or [])
 
@@ -294,11 +329,14 @@ def summarize_decision_log(path: Path) -> dict[str, Any]:
         "decisions": decisions,
         "retry_calls": retries,
         "decisions_with_retry": decisions_with_retry,
+        "model_calls": model_calls,
+        "expected_model_calls": expected_model_calls,
         "fallbacks": fallbacks,
         "decisions_with_errors": decisions_with_errors,
         "transport_errors": transport_errors,
         "validation_errors": validation_errors,
         "tool_call_decisions": tool_calls,
+        "tactical_tool_decisions": tactical_tool_calls,
         "rationale_decisions": rationales,
         "confidence_sum": round(sum(confidences), 6),
         "confidence_count": len(confidences),
@@ -324,7 +362,7 @@ def _evaluation_report(
 ) -> dict[str, Any]:
     overall = aggregate_runs(runs)
     preflight_tokens = int((preflight or {}).get("total_tokens", 0))
-    quality = assess_quality(overall)
+    quality = assess_quality(overall, policy_mode=plan.policy_mode)
     report = {
         "schema_version": EVALUATION_SCHEMA_VERSION,
         "status": status,
@@ -373,18 +411,21 @@ def aggregate_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
         for key in (
             "retry_calls",
             "decisions_with_retry",
+            "model_calls",
+            "expected_model_calls",
             "fallbacks",
             "decisions_with_errors",
             "transport_errors",
             "validation_errors",
             "tool_call_decisions",
+            "tactical_tool_decisions",
             "rationale_decisions",
             "confidence_count",
             "input_tokens",
             "output_tokens",
             "total_tokens",
         ):
-            totals[key] += metrics[key]
+            totals[key] += metrics.get(key, 0)
         reason_counts.update(metrics["reason_code_counts"])
 
     confidence_sum = sum(run["decision_metrics"]["confidence_sum"] for run in runs)
@@ -402,6 +443,12 @@ def aggregate_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
         "decisions": decisions,
         "retry_calls": totals["retry_calls"],
         "retry_rate": _rate(totals["decisions_with_retry"], decisions),
+        "model_calls": totals["model_calls"],
+        "expected_model_calls": totals["expected_model_calls"],
+        "average_model_calls_per_decision": _rate(
+            totals["model_calls"],
+            decisions,
+        ),
         "fallbacks": totals["fallbacks"],
         "fallback_rate": _rate(totals["fallbacks"], decisions),
         "decisions_with_errors": totals["decisions_with_errors"],
@@ -412,6 +459,10 @@ def aggregate_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
         "transport_errors": totals["transport_errors"],
         "validation_errors": totals["validation_errors"],
         "tool_call_coverage": _rate(totals["tool_call_decisions"], decisions),
+        "tactical_tool_coverage": _rate(
+            totals["tactical_tool_decisions"],
+            decisions,
+        ),
         "rationale_coverage": _rate(totals["rationale_decisions"], decisions),
         "average_confidence": _rate(
             confidence_sum,
@@ -434,6 +485,7 @@ def assess_quality(
     metrics: dict[str, Any],
     *,
     thresholds: dict[str, float] = FINAL_QUALITY_THRESHOLDS,
+    policy_mode: str = "direct",
 ) -> dict[str, Any]:
     decisions = int(metrics.get("decisions", 0))
     if decisions == 0:
@@ -468,6 +520,15 @@ def assess_quality(
             thresholds["min_rationale_coverage"],
         ),
     )
+    if policy_mode == "tactical-tool":
+        checks += (
+            (
+                "tactical_tool_coverage",
+                float(metrics.get("tactical_tool_coverage", 0.0)),
+                ">=",
+                thresholds["min_tactical_tool_coverage"],
+            ),
+        )
     violations = []
     for name, actual, operator, expected in checks:
         failed = actual > expected if operator == "<=" else actual < expected
@@ -679,6 +740,7 @@ def _plan_differences(
         "battles_per_opponent",
         "repeats",
         "prompt_format",
+        "policy_mode",
         "run_timeout_seconds",
     ):
         left = baseline["plan"].get(key)
@@ -719,6 +781,7 @@ def render_evaluation_markdown(report: dict[str, Any]) -> str:
         "",
         f"- Status: `{report['status']}`",
         f"- Model: `{report['provenance']['model_id']}`",
+        f"- Policy: `{report['plan'].get('policy_mode', 'direct')}`",
         f"- Git commit: `{report['provenance']['git_commit']}`",
         f"- Battles: {overall['battles']}",
         f"- Research quality: `{report['quality']['status']}`",
@@ -745,6 +808,14 @@ def render_evaluation_markdown(report: dict[str, Any]) -> str:
             f"- Retry rate: {overall['retry_rate']:.2%}",
             f"- Decision error rate: {overall['decision_error_rate']:.2%}",
             f"- Tool-call coverage: {overall['tool_call_coverage']:.2%}",
+            (
+                "- Tactical-tool coverage: "
+                f"{overall.get('tactical_tool_coverage', 0.0):.2%}"
+            ),
+            (
+                "- Average model calls / decision: "
+                f"{overall.get('average_model_calls_per_decision', 0.0):.2f}"
+            ),
             f"- Rationale coverage: {overall['rationale_coverage']:.2%}",
             f"- Average tokens / battle: {overall['average_tokens_per_battle']:.1f}",
             (

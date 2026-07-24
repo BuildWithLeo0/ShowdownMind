@@ -101,6 +101,11 @@ class PolicyResult:
     policy_input_hash: str
     policy_input_characters: int
     policy_input: dict[str, Any]
+    model_calls: int = 0
+    expected_model_calls: int = 1
+    tool_names: tuple[str, ...] = ()
+    tool_executions: tuple[dict[str, Any], ...] = ()
+    tactical_analysis: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -122,7 +127,12 @@ class DecisionRecord:
     policy_input: dict[str, Any] = field(default_factory=dict)
     response_ids: tuple[str, ...] = ()
     tool_name: str = ""
+    tool_names: tuple[str, ...] = ()
     tool_call_ids: tuple[str, ...] = ()
+    tool_executions: tuple[dict[str, Any], ...] = ()
+    tactical_analysis: dict[str, Any] = field(default_factory=dict)
+    model_calls: int = 0
+    expected_model_calls: int = 1
     usages: tuple[TokenUsage, ...] = ()
     confidence: float | None = None
     reason_codes: tuple[str, ...] = ()

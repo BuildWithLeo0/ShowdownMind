@@ -57,7 +57,12 @@ class ResearchPlayer(Player):
         model_ids: tuple[str, ...] = ()
         response_ids: tuple[str, ...] = ()
         tool_call_ids: tuple[str, ...] = ()
+        tool_names: tuple[str, ...] = ()
+        tool_executions: tuple[dict[str, Any], ...] = ()
+        tactical_analysis: dict[str, Any] = {}
         usages: tuple[TokenUsage, ...] = ()
+        model_calls = 0
+        expected_model_calls = 1
         confidence: float | None = None
         reason_codes: tuple[str, ...] = ()
         short_rationale = ""
@@ -68,7 +73,11 @@ class ResearchPlayer(Player):
         policy_input: dict[str, Any] = {}
 
         try:
-            result = await self._policy.decide(snapshot, catalog)
+            result = await self._policy.decide(
+                snapshot,
+                catalog,
+                battle=battle,
+            )
             action_id = result.decision.action_id
             attempts = result.attempts
             errors = result.errors
@@ -76,7 +85,12 @@ class ResearchPlayer(Player):
             model_ids = result.model_ids
             response_ids = result.response_ids
             tool_call_ids = result.tool_call_ids
+            tool_names = result.tool_names
+            tool_executions = result.tool_executions
+            tactical_analysis = result.tactical_analysis
             usages = result.usages
+            model_calls = result.model_calls
+            expected_model_calls = result.expected_model_calls
             confidence = result.decision.confidence
             reason_codes = result.decision.reason_codes
             short_rationale = result.decision.short_rationale
@@ -92,7 +106,12 @@ class ResearchPlayer(Player):
             model_ids = exc.model_ids
             response_ids = exc.response_ids
             tool_call_ids = exc.tool_call_ids
+            tool_names = exc.tool_names
+            tool_executions = exc.tool_executions
+            tactical_analysis = exc.tactical_analysis
             usages = exc.usages
+            model_calls = exc.model_calls
+            expected_model_calls = exc.expected_model_calls
             attempts = exc.attempts
             elapsed_seconds = exc.elapsed_seconds
             policy_input_format = exc.policy_input.format_name
@@ -126,7 +145,12 @@ class ResearchPlayer(Player):
             policy_input=policy_input,
             response_ids=response_ids,
             tool_name=ACTION_TOOL_NAME,
+            tool_names=tool_names,
             tool_call_ids=tool_call_ids,
+            tool_executions=tool_executions,
+            tactical_analysis=tactical_analysis,
+            model_calls=model_calls,
+            expected_model_calls=expected_model_calls,
             usages=usages,
             confidence=confidence,
             reason_codes=reason_codes,

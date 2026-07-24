@@ -18,6 +18,7 @@ BASE_URL_ENV = "SHOWDOWN_MIND_BASE_URL"
 MODEL_ENV = "SHOWDOWN_MIND_MODEL"
 THINKING_ENV = "SHOWDOWN_MIND_THINKING"
 ACTION_TOOL_NAME = "choose_battle_action"
+TACTICAL_TOOL_NAME = "analyze_battle_options"
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,15 @@ class ModelRequest:
     system_prompt: str
     user_prompt: str
     tool: ModelTool
+    tool_history: tuple[ToolExchange, ...] = ()
+
+
+@dataclass(frozen=True)
+class ToolExchange:
+    tool_call_id: str
+    tool_name: str
+    arguments: str
+    result: str
 
 
 @dataclass(frozen=True)
@@ -65,7 +75,11 @@ class ScriptedModelClient:
         self.requests.append(request)
         if not self._responses:
             raise ModelCallError("ScriptedModelClient has no responses left")
-        return ModelResponse(self._responses.pop(0), self.model_id)
+        return ModelResponse(
+            self._responses.pop(0),
+            self.model_id,
+            tool_call_id=f"scripted-tool-call-{len(self.requests)}",
+        )
 
 
 class DeterministicModelClient:
@@ -75,6 +89,12 @@ class DeterministicModelClient:
 
     async def complete(self, request: ModelRequest) -> ModelResponse:
         payload = json.loads(request.user_prompt)
+        if request.tool.name == TACTICAL_TOOL_NAME:
+            return ModelResponse(
+                "{}",
+                self.model_id,
+                tool_call_id="deterministic-tactical-tool-call",
+            )
         actions = payload["legal_actions"]
         moves = [action for action in actions if action["kind"] == "move"]
         selected = max(
@@ -140,13 +160,38 @@ class OpenAICompatibleModelClient:
             if self.thinking_mode is not None
             else None
         )
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": request.system_prompt},
+            {"role": "user", "content": request.user_prompt},
+        ]
+        for exchange in request.tool_history:
+            messages.extend(
+                [
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": exchange.tool_call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": exchange.tool_name,
+                                    "arguments": exchange.arguments,
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": exchange.tool_call_id,
+                        "content": exchange.result,
+                    },
+                ]
+            )
         try:
             completion = await self._client.chat.completions.create(
                 model=self.model_id,
-                messages=[
-                    {"role": "system", "content": request.system_prompt},
-                    {"role": "user", "content": request.user_prompt},
-                ],
+                messages=messages,
                 tools=[
                     {
                         "type": "function",

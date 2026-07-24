@@ -20,7 +20,7 @@ from showdown_mind.experiment_artifacts import (
 )
 from showdown_mind.models import ModelClient
 from showdown_mind.paths import REPLAY_DIR, RUNTIME_DIR
-from showdown_mind.policy import SingleCallPolicy
+from showdown_mind.policy import make_policy
 from showdown_mind.storage import JsonlDecisionWriter
 
 
@@ -46,6 +46,7 @@ class AgentSmokeResult:
     manifest_path: str
     summary_path: str
     failure_path: str
+    policy_mode: str = "direct"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -59,6 +60,7 @@ async def run_agent_battles(
     decision_log: Path | None = None,
     timeout_seconds: float | None = None,
     prompt_format: str = "pruned",
+    policy_mode: str = "direct",
 ) -> AgentSmokeResult:
     if battles < 1:
         raise ValueError("battles must be at least 1")
@@ -80,6 +82,7 @@ async def run_agent_battles(
             requested_battles=battles,
             prompt_format=f"{prompt_format}-v1",
             timeout_seconds=effective_timeout,
+            policy_mode=policy_mode,
         ),
     )
     writer = JsonlDecisionWriter(log_path)
@@ -87,7 +90,11 @@ async def run_agent_battles(
     opponent = None
     try:
         agent = ResearchPlayer(
-            SingleCallPolicy(model_client, input_format=prompt_format),
+            make_policy(
+                model_client,
+                policy_mode=policy_mode,
+                input_format=prompt_format,
+            ),
             battle_format=BATTLE_FORMAT,
             max_concurrent_battles=1,
             save_replays=str(REPLAY_DIR),
@@ -125,7 +132,10 @@ async def run_agent_battles(
             opponent_wins=opponent_wins,
             draws=finished - agent_wins - opponent_wins,
             decisions=len(agent.decision_records),
-            model_calls=sum(record.attempts for record in agent.decision_records),
+            model_calls=sum(
+                record.model_calls or record.attempts
+                for record in agent.decision_records
+            ),
             fallbacks=sum(record.fallback_used for record in agent.decision_records),
             input_tokens=sum(
                 usage.input_tokens
@@ -150,6 +160,7 @@ async def run_agent_battles(
             manifest_path=str(artifacts.paths.manifest),
             summary_path=str(artifacts.paths.summary),
             failure_path=str(artifacts.paths.failure),
+            policy_mode=policy_mode,
         )
         artifacts.write_summary(result.to_dict())
         return result

@@ -308,6 +308,32 @@ const actionStats = (action) => {
   return [power, accuracy].filter(Boolean).join("<br>");
 };
 
+const tacticalAction = (decision, actionId) =>
+  (decision.tactical_analysis?.actions || []).find(
+    (action) => action.action_id === actionId
+  );
+
+const tacticalStats = (analysis) => {
+  if (!analysis) return "";
+  if (analysis.kind === "move") {
+    const multiplier =
+      typeof analysis.type_multiplier === "number"
+        ? `${analysis.type_multiplier}× TYPE`
+        : "";
+    const relative =
+      typeof analysis.relative_damage === "number"
+        ? `${Math.round(analysis.relative_damage * 100)}% REL`
+        : "DYNAMIC POWER";
+    return [multiplier, relative, titleCase(analysis.move_order)]
+      .filter(Boolean)
+      .join(" · ");
+  }
+  if (analysis.kind === "switch") {
+    return `MATCHUP ${analysis.matchup_score} · ${titleCase(analysis.speed_relation)}`;
+  }
+  return "";
+};
+
 const renderActions = (decision) => {
   if (!decision.snapshot.legal_actions.length) {
     return '<div class="empty-copy">这个请求没有记录合法动作。</div>';
@@ -322,6 +348,7 @@ const renderActions = (decision) => {
               <div class="action-copy">
                 <strong>${escapeHtml(action.label)}</strong>
                 <small>${escapeHtml(titleCase(action.kind))} · ${escapeHtml(titleCase(action.details?.type || action.details?.species || ""))}</small>
+                <small>${escapeHtml(tacticalStats(tacticalAction(decision, action.action_id)))}</small>
               </div>
               <div class="action-stats">${actionStats(action)}</div>
             </div>
@@ -396,14 +423,29 @@ const renderState = (decision) => {
 };
 
 const renderTrace = (decision) => {
+  const toolSequence = decision.tool.call_ids
+    .map((callId, index) => {
+      const name =
+        decision.tool.names[index] ||
+        (index === decision.tool.call_ids.length - 1
+          ? decision.tool.name
+          : "unknown_tool");
+      return `<code>${escapeHtml(name)}</code> <code>${escapeHtml(callId)}</code>`;
+    })
+    .join(" → ");
   const trace = [
-    `<div class="trace-item">模型接口共执行 <strong>${decision.attempts}</strong> 次；最终动作通过白名单校验。</div>`,
+    `<div class="trace-item">模型接口执行 <strong>${decision.model_calls}</strong> 次，正常流程需要 ${decision.expected_model_calls} 次；策略尝试数为 ${decision.attempts}。</div>`,
     decision.tool.call_ids.length
-      ? `<div class="trace-item">原生工具：<code>${escapeHtml(decision.tool.name)}</code> · ${decision.tool.call_ids.map((callId) => `<code>${escapeHtml(callId)}</code>`).join(" / ")}</div>`
+      ? `<div class="trace-item">原生工具链：${toolSequence}</div>`
       : '<div class="trace-item">这条旧记录或测试记录没有原生 tool-call ID。</div>',
     `<div class="trace-item">输入为 <code>${escapeHtml(decision.policy_input.format || "unknown")}</code>，${decision.policy_input.characters.toLocaleString()} characters。</div>`,
     `<div class="trace-item">Token：输入 ${decision.usage.input_tokens.toLocaleString()} / 输出 ${decision.usage.output_tokens.toLocaleString()} / 合计 ${decision.usage.total_tokens.toLocaleString()}。</div>`,
   ];
+  if (decision.tactical_analysis?.schema) {
+    trace.push(
+      `<div class="trace-item">战术计算：速度 <strong>${escapeHtml(titleCase(decision.tactical_analysis.speed_relation))}</strong>；最佳伤害 ${escapeHtml((decision.tactical_analysis.best_damage_action_ids || []).join(", ") || "—")}；最佳换人 ${escapeHtml((decision.tactical_analysis.best_switch_action_ids || []).join(", ") || "—")}。</div>`
+    );
+  }
   if (decision.fallback_used) {
     trace.push(
       '<div class="trace-item is-error">模型没有及时给出可执行动作，本回合使用了安全备用策略。</div>'

@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from types import SimpleNamespace
 from typing import Any
 
-from poke_env.battle import Move
+from poke_env.battle import Move, Pokemon
 from poke_env.player.battle_order import SingleBattleOrder
 
 from showdown_mind.actions import ActionCatalog, CatalogEntry
 from showdown_mind.domain import BattleSnapshot, LegalAction
 from showdown_mind.models import ModelClient
-from showdown_mind.policy import SingleCallPolicy
+from showdown_mind.policy import make_policy
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,10 @@ class ModelCheckResult:
     input_tokens: int
     output_tokens: int
     total_tokens: int
+    policy_mode: str = "direct"
+    model_calls: int = 0
+    expected_model_calls: int = 1
+    tool_call_ids: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -35,6 +40,7 @@ async def run_model_check(
     model_client: ModelClient,
     *,
     prompt_format: str = "pruned",
+    policy_mode: str = "direct",
 ) -> ModelCheckResult:
     catalog = _check_catalog()
     snapshot = BattleSnapshot(
@@ -63,10 +69,15 @@ async def run_model_check(
         },
         legal_actions=catalog.actions,
     )
-    result = await SingleCallPolicy(
+    result = await make_policy(
         model_client,
+        policy_mode=policy_mode,
         input_format=prompt_format,
-    ).decide(snapshot, catalog)
+    ).decide(
+        snapshot,
+        catalog,
+        battle=_check_battle(),
+    )
     return ModelCheckResult(
         model_id=result.model_ids[-1],
         prompt_format=result.policy_input_format,
@@ -80,6 +91,10 @@ async def run_model_check(
         input_tokens=sum(usage.input_tokens for usage in result.usages),
         output_tokens=sum(usage.output_tokens for usage in result.usages),
         total_tokens=sum(usage.total_tokens for usage in result.usages),
+        policy_mode=policy_mode,
+        model_calls=result.model_calls,
+        expected_model_calls=result.expected_model_calls,
+        tool_call_ids=result.tool_call_ids,
     )
 
 
@@ -117,4 +132,11 @@ def _check_catalog() -> ActionCatalog:
             CatalogEntry(action=action, order=order)
             for action, order in zip(actions, orders, strict=True)
         )
+    )
+
+
+def _check_battle() -> SimpleNamespace:
+    return SimpleNamespace(
+        active_pokemon=Pokemon(gen=9, species="Pikachu"),
+        opponent_active_pokemon=Pokemon(gen=9, species="Gyarados"),
     )
