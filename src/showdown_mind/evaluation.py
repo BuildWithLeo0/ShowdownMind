@@ -183,7 +183,7 @@ async def run_evaluation(
                         f"run {stem} crossed the quality stop gate: {details}"
                     )
     except Exception as exc:
-        safe_message = redact_secrets(str(exc))[:1000]
+        safe_message = _failure_detail(exc)
         report = _evaluation_report(
             plan=plan,
             status="incomplete",
@@ -812,6 +812,15 @@ def render_comparison_markdown(comparison: dict[str, Any]) -> str:
 
 def _rate(numerator: float, denominator: int) -> float:
     return round(numerator / denominator, 6) if denominator else 0.0
+
+
+def _failure_detail(error: Exception) -> str:
+    recorded_errors = getattr(error, "errors", ())
+    if recorded_errors:
+        detail = str(recorded_errors[-1])
+    else:
+        detail = str(error)
+    return redact_secrets(detail)[:1000]
 
 
 def _difference(candidate: Any, baseline: Any) -> float:

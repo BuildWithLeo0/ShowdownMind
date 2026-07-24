@@ -255,8 +255,11 @@ async def test_failed_preflight_writes_incomplete_report(tmp_path) -> None:
     class FakeClient:
         model_id = "fake-model"
 
+    class DetailedProviderError(RuntimeError):
+        errors = ("ModelCallError: unavailable with sk-abcdefghijk",)
+
     async def failed_check(*args, **kwargs):
-        raise RuntimeError("provider failed with sk-abcdefghijk")
+        raise DetailedProviderError("generic policy failure")
 
     output = tmp_path / "failed"
     plan = EvaluationPlan(
@@ -277,7 +280,8 @@ async def test_failed_preflight_writes_incomplete_report(tmp_path) -> None:
     saved = json.loads((output / "report.json").read_text())
     assert saved["status"] == "incomplete"
     assert saved["overall"]["battles"] == 0
-    assert saved["failure"]["error_type"] == "RuntimeError"
+    assert saved["failure"]["error_type"] == "DetailedProviderError"
+    assert "ModelCallError: unavailable" in saved["failure"]["message"]
     assert "abcdefghijk" not in json.dumps(saved)
 
 
