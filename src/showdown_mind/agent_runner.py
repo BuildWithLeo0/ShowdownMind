@@ -30,7 +30,11 @@ class AgentSmokeResult:
     opponent_wins: int
     draws: int
     decisions: int
+    model_calls: int
     fallbacks: int
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
     elapsed_seconds: float
     decision_log: str
 
@@ -44,9 +48,12 @@ async def run_agent_battles(
     opponent_name: str = "max-base-power",
     battles: int = 1,
     decision_log: Path | None = None,
+    timeout_seconds: float | None = None,
 ) -> AgentSmokeResult:
     if battles < 1:
         raise ValueError("battles must be at least 1")
+    if timeout_seconds is not None and timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be positive")
 
     ensure_localhost_bypasses_proxy()
     log_path = decision_log or (
@@ -67,11 +74,12 @@ async def run_agent_battles(
         try:
             await asyncio.wait_for(
                 agent.battle_against(opponent, n_battles=battles),
-                timeout=max(60.0, battles * 30.0),
+                timeout=timeout_seconds or max(60.0, battles * 30.0),
             )
         except TimeoutError as exc:
             raise BaselineError(
-                f"Agent battle timed out after requesting {battles} battles"
+                "Agent battle timed out after requesting "
+                f"{battles} battles; increase --battle-timeout"
             ) from exc
     finally:
         await asyncio.gather(
@@ -95,7 +103,23 @@ async def run_agent_battles(
         opponent_wins=opponent_wins,
         draws=finished - agent_wins - opponent_wins,
         decisions=len(agent.decision_records),
+        model_calls=sum(record.attempts for record in agent.decision_records),
         fallbacks=sum(record.fallback_used for record in agent.decision_records),
+        input_tokens=sum(
+            usage.input_tokens
+            for record in agent.decision_records
+            for usage in record.usages
+        ),
+        output_tokens=sum(
+            usage.output_tokens
+            for record in agent.decision_records
+            for usage in record.usages
+        ),
+        total_tokens=sum(
+            usage.total_tokens
+            for record in agent.decision_records
+            for usage in record.usages
+        ),
         elapsed_seconds=round(time.monotonic() - started, 3),
         decision_log=str(log_path),
     )

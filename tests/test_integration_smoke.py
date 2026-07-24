@@ -32,6 +32,7 @@ async def test_policy_agent_finishes_and_logs_a_local_battle(tmp_path) -> None:
             DeterministicModelClient(),
             battles=1,
             decision_log=decision_log,
+            timeout_seconds=60,
         )
 
     assert result.finished_battles == 1

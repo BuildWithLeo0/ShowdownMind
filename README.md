@@ -12,8 +12,9 @@ The project currently has two completed foundations:
 5. validate one model decision, allow one repair, and fall back safely;
 6. record every visible snapshot, model response, action, and fallback in JSONL.
 
-The next milestone is a real LLM provider adapter. Belief tracking, damage
-tools, and planning stay separate so their effects can be measured later.
+The current version also supports a real OpenAI-compatible model endpoint.
+Belief tracking, damage tools, and planning stay separate so their effects can
+be measured later.
 
 ## Requirements
 
@@ -79,6 +80,44 @@ visible battle state
 highest-base-power legal move. It verifies the model boundary but is not an
 LLM and should not be reported as an LLM result. The output prints the decision
 log path under `.runtime/decisions/`.
+
+## Connect a live model
+
+Copy the environment template and add your own API key:
+
+```bash
+cp .env.example .env
+chmod 600 .env
+```
+
+`.env` is ignored by Git. ShowdownMind uses project-specific environment names
+so it does not overwrite an official OpenAI configuration:
+
+```dotenv
+SHOWDOWN_MIND_API_KEY=replace-with-your-api-key
+SHOWDOWN_MIND_BASE_URL=https://www.codexapis.com/v1
+SHOWDOWN_MIND_MODEL=gpt-5.6-luna
+```
+
+Verify the provider, credentials, model name, and JSON decision contract with
+one small request:
+
+```bash
+uv run --env-file .env showdown-mind model-check
+```
+
+Then run one real LLM battle:
+
+```bash
+uv run --env-file .env showdown-mind llm-smoke \
+  --opponent max-base-power \
+  --battles 1
+```
+
+Live battles default to a 300-second batch timeout because each turn makes a
+network request. Override it with `--battle-timeout`. The final result reports
+model calls and input, output, and total tokens; per-turn response IDs and usage
+are stored in the JSONL decision log.
 
 ## Tests
 

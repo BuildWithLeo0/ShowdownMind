@@ -8,7 +8,7 @@ from poke_env.player import Player
 from poke_env.player.battle_order import BattleOrder
 
 from showdown_mind.actions import ActionCatalog
-from showdown_mind.domain import DecisionRecord
+from showdown_mind.domain import DecisionRecord, TokenUsage
 from showdown_mind.observation import BattleSnapshotBuilder
 from showdown_mind.policy import PolicyFailure, SingleCallPolicy
 
@@ -54,6 +54,8 @@ class ResearchPlayer(Player):
         errors: tuple[str, ...] = ()
         raw_responses: tuple[str, ...] = ()
         model_ids: tuple[str, ...] = ()
+        response_ids: tuple[str, ...] = ()
+        usages: tuple[TokenUsage, ...] = ()
         confidence: float | None = None
         reason_codes: tuple[str, ...] = ()
         short_rationale = ""
@@ -66,6 +68,8 @@ class ResearchPlayer(Player):
             errors = result.errors
             raw_responses = result.raw_responses
             model_ids = result.model_ids
+            response_ids = result.response_ids
+            usages = result.usages
             confidence = result.decision.confidence
             reason_codes = result.decision.reason_codes
             short_rationale = result.decision.short_rationale
@@ -75,6 +79,8 @@ class ResearchPlayer(Player):
             errors = exc.errors
             raw_responses = exc.raw_responses
             model_ids = exc.model_ids
+            response_ids = exc.response_ids
+            usages = exc.usages
             attempts = exc.attempts
             elapsed_seconds = exc.elapsed_seconds
             action_id = deterministic_fallback_action_id(
@@ -96,6 +102,8 @@ class ResearchPlayer(Player):
             model_ids=model_ids,
             errors=errors,
             raw_responses=raw_responses,
+            response_ids=response_ids,
+            usages=usages,
             confidence=confidence,
             reason_codes=reason_codes,
             short_rationale=short_rationale,

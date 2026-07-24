@@ -6,8 +6,13 @@ import time
 from typing import Any
 
 from showdown_mind.actions import ActionCatalog
-from showdown_mind.domain import BattleSnapshot, PolicyDecision, PolicyResult
-from showdown_mind.models import ModelClient, ModelRequest
+from showdown_mind.domain import (
+    BattleSnapshot,
+    PolicyDecision,
+    PolicyResult,
+    TokenUsage,
+)
+from showdown_mind.models import ModelCallError, ModelClient, ModelRequest
 
 SYSTEM_PROMPT = """You choose one legal action in a Pokémon Showdown battle.
 Use only the player-visible state in the request.
@@ -22,6 +27,8 @@ class PolicyFailure(RuntimeError):
         *,
         raw_responses: tuple[str, ...],
         model_ids: tuple[str, ...],
+        response_ids: tuple[str, ...],
+        usages: tuple[TokenUsage, ...],
         errors: tuple[str, ...],
         attempts: int,
         elapsed_seconds: float,
@@ -29,6 +36,8 @@ class PolicyFailure(RuntimeError):
         super().__init__(message)
         self.raw_responses = raw_responses
         self.model_ids = model_ids
+        self.response_ids = response_ids
+        self.usages = usages
         self.errors = errors
         self.attempts = attempts
         self.elapsed_seconds = elapsed_seconds
@@ -60,6 +69,8 @@ class SingleCallPolicy:
         payload = snapshot.to_dict()
         raw_responses: list[str] = []
         model_ids: list[str] = []
+        response_ids: list[str] = []
+        usages: list[TokenUsage] = []
         errors: list[str] = []
         started = time.monotonic()
         request = ModelRequest(
@@ -73,27 +84,48 @@ class SingleCallPolicy:
                     self._model_client.complete(request),
                     timeout=self._timeout_seconds,
                 )
-                raw_responses.append(response.content)
-                model_ids.append(response.model_id)
-                decision = self._parse_decision(response.content, catalog)
-            except Exception as exc:
+            except (TimeoutError, ModelCallError) as exc:
                 error = f"{type(exc).__name__}: {exc}"
                 errors.append(error)
                 if attempt >= self._max_repairs:
-                    raise PolicyFailure(
-                        "Policy did not produce a valid decision",
-                        raw_responses=tuple(raw_responses),
-                        model_ids=tuple(model_ids),
-                        errors=tuple(errors),
+                    self._raise_failure(
+                        cause=exc,
+                        raw_responses=raw_responses,
+                        model_ids=model_ids,
+                        response_ids=response_ids,
+                        usages=usages,
+                        errors=errors,
                         attempts=attempt + 1,
-                        elapsed_seconds=round(
-                            time.monotonic() - started,
-                            6,
-                        ),
-                    ) from exc
+                        started=started,
+                    )
+                # No model output exists to repair. Retry the same request once.
+                continue
+
+            raw_responses.append(response.content)
+            model_ids.append(response.model_id)
+            if response.response_id is not None:
+                response_ids.append(response.response_id)
+            if response.usage is not None:
+                usages.append(response.usage)
+            try:
+                decision = self._parse_decision(response.content, catalog)
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                error = f"{type(exc).__name__}: {exc}"
+                errors.append(error)
+                if attempt >= self._max_repairs:
+                    self._raise_failure(
+                        cause=exc,
+                        raw_responses=raw_responses,
+                        model_ids=model_ids,
+                        response_ids=response_ids,
+                        usages=usages,
+                        errors=errors,
+                        attempts=attempt + 1,
+                        started=started,
+                    )
                 request = self._repair_request(
                     snapshot=snapshot,
-                    invalid_response=raw_responses[-1] if raw_responses else "",
+                    invalid_response=response.content,
                     error=error,
                 )
                 continue
@@ -103,11 +135,36 @@ class SingleCallPolicy:
                 attempts=attempt + 1,
                 raw_responses=tuple(raw_responses),
                 model_ids=tuple(model_ids),
+                response_ids=tuple(response_ids),
+                usages=tuple(usages),
                 errors=tuple(errors),
                 elapsed_seconds=round(time.monotonic() - started, 6),
             )
 
         raise AssertionError("unreachable")
+
+    @staticmethod
+    def _raise_failure(
+        *,
+        cause: Exception,
+        raw_responses: list[str],
+        model_ids: list[str],
+        response_ids: list[str],
+        usages: list[TokenUsage],
+        errors: list[str],
+        attempts: int,
+        started: float,
+    ) -> None:
+        raise PolicyFailure(
+            "Policy did not produce a valid decision",
+            raw_responses=tuple(raw_responses),
+            model_ids=tuple(model_ids),
+            response_ids=tuple(response_ids),
+            usages=tuple(usages),
+            errors=tuple(errors),
+            attempts=attempts,
+            elapsed_seconds=round(time.monotonic() - started, 6),
+        ) from cause
 
     @staticmethod
     def _parse_decision(content: str, catalog: ActionCatalog) -> PolicyDecision:

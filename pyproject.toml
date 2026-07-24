@@ -9,6 +9,7 @@ description = "A reproducible research harness for Pokémon Showdown LLM agents"
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
 dependencies = [
+  "openai>=2.11,<3",
   "poke-env==0.15.0",
 ]
 

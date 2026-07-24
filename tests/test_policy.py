@@ -99,6 +99,7 @@ async def test_policy_counts_attempts_when_model_never_returns() -> None:
     assert error.value.attempts == 2
     assert error.value.raw_responses == ()
     assert error.value.model_ids == ()
+    assert client.requests[0] == client.requests[1]
 
 
 @pytest.mark.asyncio

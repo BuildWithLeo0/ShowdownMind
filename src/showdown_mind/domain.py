@@ -57,11 +57,20 @@ class PolicyDecision:
 
 
 @dataclass(frozen=True)
+class TokenUsage:
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+
+
+@dataclass(frozen=True)
 class PolicyResult:
     decision: PolicyDecision
     attempts: int
     raw_responses: tuple[str, ...]
     model_ids: tuple[str, ...]
+    response_ids: tuple[str, ...]
+    usages: tuple[TokenUsage, ...]
     errors: tuple[str, ...]
     elapsed_seconds: float
 
@@ -79,6 +88,8 @@ class DecisionRecord:
     model_ids: tuple[str, ...]
     errors: tuple[str, ...]
     raw_responses: tuple[str, ...]
+    response_ids: tuple[str, ...] = ()
+    usages: tuple[TokenUsage, ...] = ()
     confidence: float | None = None
     reason_codes: tuple[str, ...] = ()
     short_rationale: str = ""

@@ -13,7 +13,13 @@ from showdown_mind.baselines import (
     run_baseline_battles,
 )
 from showdown_mind.doctor import collect_checks, doctor_succeeded
-from showdown_mind.models import DeterministicModelClient
+from showdown_mind.model_runner import run_model_check
+from showdown_mind.models import (
+    DeterministicModelClient,
+    OpenAICompatibleModelClient,
+    live_model_client_from_env,
+)
+from showdown_mind.policy import PolicyFailure
 from showdown_mind.showdown import (
     ShowdownError,
     managed_showdown_server,
@@ -70,6 +76,38 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="require an already-running server instead of starting one",
     )
+
+    subparsers.add_parser(
+        "model-check",
+        help="make one live model call and validate its decision",
+    )
+
+    llm_smoke = subparsers.add_parser(
+        "llm-smoke",
+        help="run Policy-first battles with the configured live model",
+    )
+    llm_smoke.add_argument(
+        "--opponent",
+        choices=choices,
+        default="max-base-power",
+    )
+    llm_smoke.add_argument("--battles", type=int, default=1)
+    llm_smoke.add_argument(
+        "--battle-timeout",
+        type=float,
+        default=300.0,
+        help="maximum seconds for the complete batch (default: 300)",
+    )
+    llm_smoke.add_argument(
+        "--decision-log",
+        type=Path,
+        help="write per-turn JSONL records to this path",
+    )
+    llm_smoke.add_argument(
+        "--no-manage-server",
+        action="store_true",
+        help="require an already-running server instead of starting one",
+    )
     return parser
 
 
@@ -116,6 +154,53 @@ def _run_agent_smoke(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_model_check() -> int:
+    async def execute() -> None:
+        client = live_model_client_from_env()
+        try:
+            result = await run_model_check(client)
+        finally:
+            await client.aclose()
+        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+
+    asyncio.run(execute())
+    return 0
+
+
+def _run_llm_smoke(args: argparse.Namespace) -> int:
+    async def execute(client: OpenAICompatibleModelClient) -> None:
+        check = await run_model_check(client)
+        print(
+            json.dumps(
+                {"model_check": check.to_dict()},
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        result = await run_agent_battles(
+            client,
+            opponent_name=args.opponent,
+            battles=args.battles,
+            decision_log=args.decision_log,
+            timeout_seconds=args.battle_timeout,
+        )
+        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+
+    async def run_and_close() -> None:
+        client = live_model_client_from_env()
+        try:
+            await execute(client)
+        finally:
+            await client.aclose()
+
+    if args.no_manage_server:
+        asyncio.run(run_and_close())
+    else:
+        with managed_showdown_server():
+            asyncio.run(run_and_close())
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -134,6 +219,14 @@ def main(argv: list[str] | None = None) -> int:
             return _run_smoke(args)
         if args.command == "agent-smoke":
             return _run_agent_smoke(args)
+        if args.command == "model-check":
+            return _run_model_check()
+        if args.command == "llm-smoke":
+            return _run_llm_smoke(args)
+    except PolicyFailure as exc:
+        detail = exc.errors[-1] if exc.errors else str(exc)
+        print(f"error: model policy failed: {detail}", file=sys.stderr)
+        return 1
     except (BaselineError, ShowdownError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
