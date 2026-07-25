@@ -14,8 +14,8 @@ The project currently has these completed foundations:
 7. record every visible snapshot, tool call, action, and fallback in JSONL.
 
 The current version also supports a real OpenAI-compatible model endpoint.
-Belief tracking, damage tools, and planning stay separate so their effects can
-be measured later.
+The tactical calculator stays separate from belief tracking and planning so
+each capability can be measured independently.
 
 ## Requirements
 
@@ -149,8 +149,12 @@ analyze_battle_options()
   -> whitelist validation and Showdown action
 ```
 
-It estimates relative damage, STAB, type effectiveness, accuracy, speed order,
-priority, and switch matchups. It does not inspect unrevealed opponent data.
+Its v2 result estimates effective power, damage ranges, KO probability, STAB,
+type effectiveness, speed order, defensive Tera value, priority, and switch
+matchups. Supported variable-power moves use the current visible state; unknown
+dynamic moves remain explicitly unranked. The calculation does not inspect
+unrevealed opponent data and does not pretend hidden EVs, items, abilities, or
+moves are known.
 Try it with the deterministic model boundary or the configured live model:
 
 ```bash

@@ -56,3 +56,33 @@ No other auxiliary tool is added in v1. In particular, memory, search, planner,
 and simulator tools are deferred until the tactical calculator is evaluated.
 Adding one capability at a time keeps the result attributable.
 
+## Calculator v2
+
+The second calculator version keeps the same bounded two-tool workflow and
+improves the deterministic analysis rather than adding another Agent tool.
+
+For damaging moves it now returns:
+
+- effective power and an explanation of where that power came from;
+- support for common weight-, speed-, HP-, boost-, status-, item-, and
+  turn-order-dependent moves;
+- the correct attacking and defending stats for exceptions such as Body Press,
+  Foul Play, Psyshock, and Tera Blast;
+- an approximate damage interval as a fraction of maximum HP;
+- an approximate one-hit KO probability that includes move accuracy;
+- explicit best expected-damage and best KO candidate IDs;
+- Tera Blast's effective Tera type;
+- a type-only defensive Tera comparison against the opponent's visible STAB
+  types.
+
+The schema is `tactical-analysis-v2`. Damage approximates the public Pokémon
+damage formula and its 16 random rolls, but deliberately does not invent hidden
+EVs, items, abilities, or moves. It uses exact player-visible stats when
+available; for missing stats it assumes 31 IVs, zero EVs, and a neutral nature,
+and clearly labels unsupported variable-power moves as unknown.
+Weather, screens, critical hits, ability and item modifiers, and exact
+multi-hit distributions remain outside this approximation.
+
+This version still does not simulate the next turn. A two-turn searcher would
+be a separate experiment because it changes the Agent from using arithmetic
+facts to exploring future game states.
