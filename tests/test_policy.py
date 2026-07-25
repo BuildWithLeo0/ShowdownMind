@@ -203,6 +203,17 @@ async def test_policy_accepts_weather_and_accuracy_reason_codes() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("alias", ["KO", "KO_PROBABILITY"])
+async def test_policy_normalizes_ko_reason_code_aliases(alias: str) -> None:
+    client = ScriptedModelClient([decision_json(reason_codes=[alias])])
+
+    result = await SingleCallPolicy(client).decide(snapshot(), catalog())
+
+    assert result.attempts == 1
+    assert result.decision.reason_codes == ("DAMAGE",)
+
+
+@pytest.mark.asyncio
 async def test_tactical_policy_executes_two_native_tools_in_order() -> None:
     client = ScriptedModelClient(["{}", decision_json()])
     battle = type(

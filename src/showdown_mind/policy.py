@@ -50,6 +50,10 @@ REASON_CODES = (
     "WEATHER",
     "OTHER",
 )
+REASON_CODE_ALIASES = {
+    "KO": "DAMAGE",
+    "KO_PROBABILITY": "DAMAGE",
+}
 
 SYSTEM_PROMPT = """You choose one legal action in a Pokémon Showdown battle.
 Use only the player-visible state in the request.
@@ -296,6 +300,12 @@ class SingleCallPolicy:
             isinstance(code, str) for code in reason_codes
         ):
             raise TypeError("reason_codes must be a list of strings")
+        reason_codes = list(
+            dict.fromkeys(
+                REASON_CODE_ALIASES.get(code, code)
+                for code in reason_codes
+            )
+        )
         if not 1 <= len(reason_codes) <= 3:
             raise ValueError("reason_codes must contain between 1 and 3 values")
         invalid_codes = sorted(set(reason_codes).difference(REASON_CODES))
