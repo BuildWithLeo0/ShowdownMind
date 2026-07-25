@@ -86,3 +86,38 @@ multi-hit distributions remain outside this approximation.
 This version still does not simulate the next turn. A two-turn searcher would
 be a separate experiment because it changes the Agent from using arithmetic
 facts to exploring future game states.
+
+## Survival calculator v2.1
+
+Version 2.1 adds a bounded single-reply estimate without creating an Agent loop
+or a general game-tree searcher. Every legal action receives a `counterplay`
+object calculated from opponent moves that have already been revealed in the
+battle protocol.
+
+For move actions, the calculator:
+
+- compares both moves' priority and the current speed order;
+- estimates the worst revealed incoming damage and KO probability;
+- discounts the reply when the player's faster move can KO first;
+- accounts for healing, drain, and recoil before the estimated reply;
+- evaluates the player's post-Tera defensive typing;
+- recognizes Protect as blocking the modeled damaging reply.
+
+For switch actions, it:
+
+- applies visible Stealth Rock, Spikes, Toxic Spikes, Sticky Web, and
+  G-Max Steelsurge effects;
+- respects visible Heavy-Duty Boots, Magic Guard, Levitate, Air Balloon,
+  Flying typing, and Gravity;
+- estimates the worst revealed attack against the incoming Pokémon after entry
+  damage;
+- includes entry damage and counter-KO probability in the switch matchup score.
+
+The shared damage modifier now includes visible rain, sun, sand, snow, terrain,
+burn, Reflect, Light Screen, and Aurora Veil. The top-level result identifies
+the actions with the lowest modeled counter-KO probability.
+
+The schema is `tactical-analysis-v2.1`. This remains a conservative one-reply
+calculator: it does not guess unrevealed moves, predict switches, model status
+move outcomes, or search multiple future turns. If no revealed damaging move
+can be scored, the counterplay result is explicitly marked unavailable.

@@ -149,12 +149,14 @@ analyze_battle_options()
   -> whitelist validation and Showdown action
 ```
 
-Its v2 result estimates effective power, damage ranges, KO probability, STAB,
+Its v2.1 result estimates effective power, damage ranges, KO probability, STAB,
 type effectiveness, speed order, defensive Tera value, priority, and switch
-matchups. Supported variable-power moves use the current visible state; unknown
-dynamic moves remain explicitly unranked. The calculation does not inspect
-unrevealed opponent data and does not pretend hidden EVs, items, abilities, or
-moves are known.
+matchups. It also checks the worst revealed opponent reply, accounts for
+visible weather, terrain, screens, burn, and entry hazards, and identifies
+actions with the lowest modeled counter-KO risk. Supported variable-power moves
+use the current visible state; unknown dynamic moves remain explicitly
+unranked. The calculation does not inspect unrevealed opponent data and does
+not pretend hidden EVs, items, abilities, or moves are known.
 Try it with the deterministic model boundary or the configured live model:
 
 ```bash

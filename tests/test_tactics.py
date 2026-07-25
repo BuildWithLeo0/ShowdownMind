@@ -21,6 +21,23 @@ def move_entry(move_id: str, *, tera: bool = False) -> CatalogEntry:
     )
 
 
+def healthy_pokemon(species: str) -> Pokemon:
+    pokemon = Pokemon(gen=9, species=species)
+    pokemon.set_hp_status("100/100", store=True)
+    return pokemon
+
+
+def switch_entry(pokemon: Pokemon) -> CatalogEntry:
+    return CatalogEntry(
+        action=LegalAction(
+            action_id=f"switch:{pokemon.species}",
+            kind="switch",
+            label=f"Switch to {pokemon.species}",
+        ),
+        order=SingleBattleOrder(pokemon),
+    )
+
+
 def test_advisor_ranks_player_visible_damage_facts() -> None:
     active = Pokemon(gen=9, species="Pikachu")
     opponent = Pokemon(gen=9, species="Gyarados")
@@ -98,3 +115,151 @@ def test_advisor_accounts_for_trick_room_in_move_order() -> None:
     assert result["speed_relation"] == "slower"
     assert result["speed_context"]["trick_room"] is True
     assert result["actions"][0]["move_order"] == "likely_second"
+
+
+def test_advisor_estimates_counterplay_from_revealed_moves_only() -> None:
+    active = healthy_pokemon("Pikachu")
+    opponent = healthy_pokemon("Gyarados")
+    opponent.moved("earthquake")
+
+    result = TacticalAdvisor().analyze(
+        SimpleNamespace(
+            active_pokemon=active,
+            opponent_active_pokemon=opponent,
+        ),
+        ActionCatalog(
+            (
+                move_entry("thunderbolt"),
+                move_entry("protect"),
+            )
+        ),
+    )
+
+    actions = {action["action_id"]: action for action in result["actions"]}
+    attack = actions["move:thunderbolt"]["counterplay"]
+    protect = actions["move:protect"]["counterplay"]
+    assert attack["basis"] == "revealed_opponent_moves"
+    assert attack["worst_move_id"] == "earthquake"
+    assert attack["player_acts_before_reply"] is True
+    assert attack["estimated_counter_ko_probability"] > 0
+    assert protect["estimated_counter_ko_probability"] == 0.0
+    assert protect["risk"] == "survives_known_reply"
+    assert result["safest_action_ids"] == ["move:protect"]
+
+
+def test_advisor_applies_visible_weather_and_screen_modifiers() -> None:
+    active = healthy_pokemon("Charizard")
+    opponent = healthy_pokemon("Venusaur")
+
+    result = TacticalAdvisor().analyze(
+        SimpleNamespace(
+            active_pokemon=active,
+            opponent_active_pokemon=opponent,
+            opponent_side_conditions={"light_screen": 1},
+            weather={"sunnyday": 1},
+        ),
+        ActionCatalog((move_entry("flamethrower"),)),
+    )
+
+    action = result["actions"][0]
+    assert action["battle_modifier"] == 0.75
+    assert action["modifier_sources"] == [
+        "sun_fire_boost",
+        "light_screen",
+    ]
+
+
+def test_advisor_applies_burn_and_terrain_modifiers() -> None:
+    burned = healthy_pokemon("Garchomp")
+    burned.status = "brn"
+    target = healthy_pokemon("Blissey")
+    burned_result = TacticalAdvisor().analyze(
+        SimpleNamespace(
+            active_pokemon=burned,
+            opponent_active_pokemon=target,
+        ),
+        ActionCatalog((move_entry("earthquake"),)),
+    )
+    assert burned_result["actions"][0]["battle_modifier"] == 0.5
+    assert burned_result["actions"][0]["modifier_sources"] == ["burn"]
+
+    electric = healthy_pokemon("Pikachu")
+    water_target = healthy_pokemon("Blastoise")
+    terrain_result = TacticalAdvisor().analyze(
+        SimpleNamespace(
+            active_pokemon=electric,
+            opponent_active_pokemon=water_target,
+            fields={"electric_terrain": 1},
+        ),
+        ActionCatalog((move_entry("thunderbolt"),)),
+    )
+    assert terrain_result["actions"][0]["battle_modifier"] == 1.3
+    assert terrain_result["actions"][0]["modifier_sources"] == [
+        "electric_terrain"
+    ]
+
+
+def test_repeated_protect_reports_reduced_success_probability() -> None:
+    active = healthy_pokemon("Pikachu")
+    active.moved("protect")
+    opponent = healthy_pokemon("Gyarados")
+    opponent.moved("earthquake")
+
+    result = TacticalAdvisor().analyze(
+        SimpleNamespace(
+            active_pokemon=active,
+            opponent_active_pokemon=opponent,
+        ),
+        ActionCatalog((move_entry("protect"),)),
+    )
+
+    counterplay = result["actions"][0]["counterplay"]
+    assert counterplay["protect_success_probability"] == 0.3333
+    assert counterplay["estimated_counter_ko_probability"] == 0.6667
+
+
+def test_advisor_applies_entry_hazards_before_switch_counterplay() -> None:
+    active = healthy_pokemon("Pikachu")
+    opponent = healthy_pokemon("Blastoise")
+    opponent.moved("surf")
+    candidate = healthy_pokemon("Charizard")
+
+    result = TacticalAdvisor().analyze(
+        SimpleNamespace(
+            active_pokemon=active,
+            opponent_active_pokemon=opponent,
+            side_conditions={"stealth_rock": 1},
+        ),
+        ActionCatalog((switch_entry(candidate),)),
+    )
+
+    switch = result["actions"][0]
+    assert switch["entry_hazards"]["damage_fraction"] == 0.5
+    assert switch["entry_hazards"]["post_entry_hp_fraction"] == 0.5
+    assert switch["counterplay"]["worst_move_id"] == "surf"
+    assert switch["counterplay"]["player_acts_before_reply"] is True
+
+
+def test_heavy_duty_boots_prevent_entry_hazard_effects() -> None:
+    active = healthy_pokemon("Pikachu")
+    opponent = healthy_pokemon("Blastoise")
+    candidate = healthy_pokemon("Charizard")
+    candidate.item = "heavydutyboots"
+
+    result = TacticalAdvisor().analyze(
+        SimpleNamespace(
+            active_pokemon=active,
+            opponent_active_pokemon=opponent,
+            side_conditions={
+                "spikes": 3,
+                "stealth_rock": 1,
+                "sticky_web": 1,
+            },
+        ),
+        ActionCatalog((switch_entry(candidate),)),
+    )
+
+    entry = result["actions"][0]["entry_hazards"]
+    assert entry["damage_fraction"] == 0.0
+    assert entry["post_entry_hp_fraction"] == 1.0
+    assert entry["effects"] == ["heavy_duty_boots"]

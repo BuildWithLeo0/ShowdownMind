@@ -3,13 +3,13 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from poke_env.battle import Move, Pokemon
+from poke_env.battle import Move, Pokemon, PokemonType
 from poke_env.data import GenData
 from poke_env.player.battle_order import SingleBattleOrder
 
 from showdown_mind.actions import ActionCatalog
 
-TACTICAL_ANALYSIS_SCHEMA = "tactical-analysis-v2"
+TACTICAL_ANALYSIS_SCHEMA = "tactical-analysis-v2.1"
 
 ENTRY_HAZARDS = {
     "ceaselessedge",
@@ -38,8 +38,10 @@ class TacticalAdvisor:
         opponent_conditions = (
             getattr(battle, "opponent_side_conditions", None) or {}
         )
+        fields = getattr(battle, "fields", None) or {}
+        weather = getattr(battle, "weather", None) or {}
         trick_room = _has_named_effect(
-            getattr(battle, "fields", None) or {},
+            fields,
             "trick_room",
         )
         battle_gen = int(
@@ -68,6 +70,8 @@ class TacticalAdvisor:
                         speed_relation,
                         own_conditions,
                         opponent_conditions,
+                        fields,
+                        weather,
                         battle_gen,
                     )
                 )
@@ -81,7 +85,10 @@ class TacticalAdvisor:
                         opponent,
                         own_conditions,
                         opponent_conditions,
+                        fields,
+                        weather,
                         trick_room,
+                        battle_gen,
                     )
                 )
             else:
@@ -116,6 +123,25 @@ class TacticalAdvisor:
             if action.get("estimated_ko_probability") is not None
         ]
         best_ko_probability = max(ko_estimates) if ko_estimates else None
+        counterplay_estimates = [
+            (
+                action["action_id"],
+                float(
+                    action["counterplay"][
+                        "estimated_counter_ko_probability"
+                    ]
+                ),
+            )
+            for action in actions
+            if action.get("counterplay", {}).get(
+                "estimated_counter_ko_probability"
+            )
+            is not None
+        ]
+        lowest_counter_ko_probability = min(
+            (probability for _, probability in counterplay_estimates),
+            default=None,
+        )
 
         switches = [
             action for action in actions if action.get("kind") == "switch"
@@ -139,6 +165,14 @@ class TacticalAdvisor:
                     opponent_conditions,
                     "tailwind",
                 ),
+                "weather": [
+                    _enum_name(value) for value in weather
+                ],
+                "terrain": [
+                    _enum_name(value)
+                    for value in fields
+                    if str(_enum_name(value) or "").endswith("_terrain")
+                ],
             },
             "best_damage_action_ids": [
                 action["action_id"]
@@ -159,6 +193,17 @@ class TacticalAdvisor:
                 if best_ko_probability is not None
                 else None
             ),
+            "safest_action_ids": [
+                action_id
+                for action_id, probability in counterplay_estimates
+                if lowest_counter_ko_probability is not None
+                and probability == lowest_counter_ko_probability
+            ],
+            "lowest_counter_ko_probability": (
+                round(lowest_counter_ko_probability, 4)
+                if lowest_counter_ko_probability is not None
+                else None
+            ),
             "best_switch_action_ids": [
                 action["action_id"]
                 for action in switches
@@ -171,11 +216,12 @@ class TacticalAdvisor:
                 "public species, level, types, boosts, move data, and HP. They "
                 "use exact visible stats when available; missing stats assume 31 "
                 "IVs, zero EVs, and a neutral nature. Hidden items, abilities, "
-                "weather modifiers, screens, critical hits, and other special "
-                "effects are omitted. Supported variable-power moves are "
-                "estimated; unknown dynamic moves remain unranked. Defensive Tera "
-                "compares only the opponent's currently visible STAB types, not "
-                "unrevealed moves."
+                "critical hits, and unmodeled special effects are omitted. "
+                "Weather, terrain, burn, screens, and entry hazards are included "
+                "when visible. Supported variable-power moves are estimated; "
+                "unknown dynamic moves remain unranked. Counterplay uses only "
+                "revealed opponent moves. Defensive Tera compares only the "
+                "opponent's currently visible STAB types, not unrevealed moves."
             ),
         }
 
@@ -188,6 +234,8 @@ class TacticalAdvisor:
         speed_relation: str,
         own_conditions: dict[Any, Any],
         opponent_conditions: dict[Any, Any],
+        fields: dict[Any, Any],
+        weather: dict[Any, Any],
         battle_gen: int,
     ) -> dict[str, Any]:
         move = order.order
@@ -231,6 +279,16 @@ class TacticalAdvisor:
             if stat_source == "tera_blast_special"
             else category
         )
+        damage_modifier, modifier_sources = _battle_damage_modifier(
+            attacker=active,
+            defender=opponent,
+            move=move,
+            move_type=move_type,
+            category=effective_category,
+            defender_conditions=opponent_conditions,
+            fields=fields,
+            weather=weather,
+        )
         stat_ratio = (
             attack_stat / max(defense_stat, 1.0)
             if effective_category in {"physical", "special"}
@@ -245,6 +303,7 @@ class TacticalAdvisor:
             stab=stab,
             type_multiplier=type_multiplier,
             expected_hits=expected_hits,
+            damage_modifier=damage_modifier,
         )
         ko_probability = _estimated_ko_probability(
             active,
@@ -256,11 +315,34 @@ class TacticalAdvisor:
             type_multiplier=type_multiplier,
             expected_hits=expected_hits,
             accuracy=accuracy,
+            damage_modifier=damage_modifier,
         )
         damage_index = None
         if damage_range is not None:
             damage_index = accuracy * sum(damage_range) / 2
         priority = int(_number(getattr(move, "priority", 0)))
+        self_hp_effect = _self_hp_effect(
+            active,
+            opponent,
+            move,
+            damage_range,
+            accuracy,
+        )
+        counterplay = _counterplay_estimate(
+            defender=active,
+            attacker=opponent,
+            own_move=move,
+            own_priority=priority,
+            outgoing_ko_probability=ko_probability,
+            speed_relation=speed_relation,
+            defender_conditions=own_conditions,
+            attacker_conditions=opponent_conditions,
+            fields=fields,
+            weather=weather,
+            battle_gen=battle_gen,
+            remaining_hp_fraction=self_hp_effect["post_action_hp_fraction"],
+            terastallize=bool(order.terastallize),
+        )
         result = {
             "action_id": action_id,
             "kind": "move",
@@ -284,6 +366,8 @@ class TacticalAdvisor:
             "defense_stat_estimate": round(defense_stat, 3),
             "stat_source": stat_source,
             "stat_ratio": round(stat_ratio, 4),
+            "battle_modifier": round(damage_modifier, 4),
+            "modifier_sources": modifier_sources,
             "estimated_damage_fraction_range": (
                 [round(value, 4) for value in damage_range]
                 if damage_range is not None
@@ -301,6 +385,8 @@ class TacticalAdvisor:
             "move_order": _move_order(priority, speed_relation),
             "terastallize": bool(order.terastallize),
             "role_tags": _move_role_tags(move),
+            "self_hp_effect": self_hp_effect,
+            "counterplay": counterplay,
         }
         if order.terastallize:
             result["defensive_tera"] = _defensive_tera_estimate(
@@ -317,7 +403,10 @@ class TacticalAdvisor:
         opponent: Any,
         own_conditions: dict[Any, Any],
         opponent_conditions: dict[Any, Any],
+        fields: dict[Any, Any],
+        weather: dict[Any, Any],
         trick_room: bool,
+        battle_gen: int,
     ) -> dict[str, Any]:
         candidate_types = [
             value for value in (getattr(candidate, "types", None) or []) if value
@@ -352,11 +441,38 @@ class TacticalAdvisor:
         opponent_hp = _number(
             getattr(opponent, "current_hp_fraction", 0.0)
         )
+        entry_hazards = _entry_hazard_estimate(
+            candidate,
+            own_conditions,
+            fields,
+            battle_gen,
+        )
+        counterplay = _counterplay_estimate(
+            defender=candidate,
+            attacker=opponent,
+            own_move=None,
+            own_priority=None,
+            outgoing_ko_probability=None,
+            speed_relation=speed_relation,
+            defender_conditions=own_conditions,
+            attacker_conditions=opponent_conditions,
+            fields=fields,
+            weather=weather,
+            battle_gen=battle_gen,
+            remaining_hp_fraction=entry_hazards["post_entry_hp_fraction"],
+            terastallize=False,
+        )
+        counter_ko_probability = _number(
+            counterplay.get("estimated_counter_ko_probability")
+        )
+        entry_damage = _number(entry_hazards.get("damage_fraction"))
         matchup_score = (
             offensive
             - defensive
             + speed_adjustment
             + 0.4 * (hp_fraction - opponent_hp)
+            - 2 * counter_ko_probability
+            - entry_damage
         )
         return {
             "action_id": action_id,
@@ -367,6 +483,8 @@ class TacticalAdvisor:
             "defensive_weakness_multiplier": round(defensive, 3),
             "speed_relation": speed_relation,
             "matchup_score": round(matchup_score, 4),
+            "entry_hazards": entry_hazards,
+            "counterplay": counterplay,
         }
 
 
@@ -583,6 +701,500 @@ def _offensive_stats(
     return 0.0, 1.0, "status"
 
 
+def _battle_damage_modifier(
+    *,
+    attacker: Any,
+    defender: Any,
+    move: Move,
+    move_type: Any,
+    category: str | None,
+    defender_conditions: dict[Any, Any],
+    fields: dict[Any, Any],
+    weather: dict[Any, Any],
+    defender_types: list[Any] | None = None,
+) -> tuple[float, list[str]]:
+    multiplier = 1.0
+    sources: list[str] = []
+    move_id = str(getattr(move, "id", ""))
+    move_type_name = _enum_name(move_type)
+    attacker_grounded = _is_grounded(attacker, fields)
+    defender_grounded = _is_grounded(
+        defender,
+        fields,
+        types=defender_types,
+    )
+
+    if _has_any_named_effect(weather, {"raindance", "primordialsea"}):
+        if move_type_name == "water":
+            multiplier *= 1.5
+            sources.append("rain_water_boost")
+        elif move_type_name == "fire":
+            multiplier *= 0.0 if _has_named_effect(
+                weather, "primordialsea"
+            ) else 0.5
+            sources.append("rain_fire_reduction")
+    elif _has_any_named_effect(weather, {"sunnyday", "desolateland"}):
+        if move_type_name == "fire":
+            multiplier *= 1.5
+            sources.append("sun_fire_boost")
+        elif move_type_name == "water":
+            multiplier *= 0.0 if _has_named_effect(
+                weather, "desolateland"
+            ) else 0.5
+            sources.append("sun_water_reduction")
+
+    if (
+        category == "special"
+        and _has_named_effect(weather, "sandstorm")
+        and _has_type(defender_types or getattr(defender, "types", None), "rock")
+    ):
+        multiplier *= 2 / 3
+        sources.append("sandstorm_rock_spd")
+    if (
+        category == "physical"
+        and _has_any_named_effect(weather, {"snow", "snowscape"})
+        and _has_type(defender_types or getattr(defender, "types", None), "ice")
+    ):
+        multiplier *= 2 / 3
+        sources.append("snow_ice_def")
+
+    if (
+        move_type_name == "electric"
+        and attacker_grounded
+        and _has_named_effect(fields, "electric_terrain")
+    ):
+        multiplier *= 1.3
+        sources.append("electric_terrain")
+    elif (
+        move_type_name == "grass"
+        and attacker_grounded
+        and _has_named_effect(fields, "grassy_terrain")
+    ):
+        multiplier *= 1.3
+        sources.append("grassy_terrain")
+    elif (
+        move_type_name == "psychic"
+        and attacker_grounded
+        and _has_named_effect(fields, "psychic_terrain")
+    ):
+        multiplier *= 1.3
+        sources.append("psychic_terrain")
+
+    if (
+        move_type_name == "dragon"
+        and defender_grounded
+        and _has_named_effect(fields, "misty_terrain")
+    ):
+        multiplier *= 0.5
+        sources.append("misty_terrain")
+    if (
+        move_id in {"earthquake", "bulldoze", "magnitude"}
+        and defender_grounded
+        and _has_named_effect(fields, "grassy_terrain")
+    ):
+        multiplier *= 0.5
+        sources.append("grassy_terrain_ground_move_reduction")
+    if (
+        int(_number(getattr(move, "priority", 0))) > 0
+        and defender_grounded
+        and _has_named_effect(fields, "psychic_terrain")
+    ):
+        multiplier = 0.0
+        sources.append("psychic_terrain_priority_block")
+
+    attacker_ability = str(getattr(attacker, "ability", "") or "")
+    if attacker_ability != "infiltrator":
+        if _has_named_effect(defender_conditions, "aurora_veil"):
+            multiplier *= 0.5
+            sources.append("aurora_veil")
+        elif category == "physical" and _has_named_effect(
+            defender_conditions,
+            "reflect",
+        ):
+            multiplier *= 0.5
+            sources.append("reflect")
+        elif category == "special" and _has_named_effect(
+            defender_conditions,
+            "light_screen",
+        ):
+            multiplier *= 0.5
+            sources.append("light_screen")
+
+    if (
+        category == "physical"
+        and _enum_name(getattr(attacker, "status", None)) == "brn"
+        and move_id != "facade"
+        and attacker_ability != "guts"
+    ):
+        multiplier *= 0.5
+        sources.append("burn")
+
+    return multiplier, sources
+
+
+def _self_hp_effect(
+    active: Any,
+    opponent: Any,
+    move: Move,
+    damage_range: tuple[float, float] | None,
+    accuracy: float,
+) -> dict[str, Any]:
+    current_hp = _known_hp_fraction(active)
+    if current_hp is None:
+        return {
+            "available": False,
+            "post_action_hp_fraction": None,
+        }
+
+    midpoint_damage = (
+        sum(damage_range) / 2 if damage_range is not None else 0.0
+    )
+    target_hp = _known_hp_fraction(opponent)
+    inflicted_damage = (
+        min(midpoint_damage, target_hp)
+        if target_hp is not None
+        else midpoint_damage
+    )
+    drain = max(0.0, _number(getattr(move, "drain", 0.0)))
+    recoil = max(0.0, _number(getattr(move, "recoil", 0.0)))
+    direct_heal = max(0.0, _number(getattr(move, "heal", 0.0)))
+    healing = direct_heal + inflicted_damage * drain * accuracy
+    recoil_damage = inflicted_damage * recoil * accuracy
+    post_action_hp = max(
+        0.0,
+        min(1.0, current_hp + healing - recoil_damage),
+    )
+    return {
+        "available": True,
+        "current_hp_fraction": round(current_hp, 4),
+        "expected_healing_fraction": round(healing, 4),
+        "expected_recoil_fraction": round(recoil_damage, 4),
+        "expected_net_change_fraction": round(
+            post_action_hp - current_hp,
+            4,
+        ),
+        "post_action_hp_fraction": round(post_action_hp, 4),
+        "self_ko_risk": current_hp > 0 and post_action_hp <= 0,
+    }
+
+
+def _counterplay_estimate(
+    *,
+    defender: Any,
+    attacker: Any,
+    own_move: Move | None,
+    own_priority: int | None,
+    outgoing_ko_probability: float | None,
+    speed_relation: str,
+    defender_conditions: dict[Any, Any],
+    attacker_conditions: dict[Any, Any],
+    fields: dict[Any, Any],
+    weather: dict[Any, Any],
+    battle_gen: int,
+    remaining_hp_fraction: float | None,
+    terastallize: bool,
+) -> dict[str, Any]:
+    revealed_moves = [
+        move
+        for move in (getattr(attacker, "moves", None) or {}).values()
+        if isinstance(move, Move)
+    ]
+    if remaining_hp_fraction is not None and remaining_hp_fraction <= 0:
+        return {
+            "available": True,
+            "revealed_moves_considered": len(revealed_moves),
+            "estimated_counter_ko_probability": 1.0,
+            "survival_probability": 0.0,
+            "risk": "self_ko" if own_move is not None else "entry_hazard_ko",
+        }
+    if not revealed_moves:
+        return {
+            "available": False,
+            "revealed_moves_considered": 0,
+            "unscored_move_ids": [],
+            "risk": "unknown_no_revealed_moves",
+        }
+
+    type_chart = GenData.from_gen(battle_gen).type_chart
+    defender_types = _defender_types_after_action(
+        defender,
+        terastallize=terastallize,
+    )
+    attacker_speed_relation = _reverse_speed_relation(speed_relation)
+    protected = bool(
+        own_move is not None
+        and getattr(own_move, "is_protect_move", False)
+    )
+    protect_success_probability = (
+        1
+        / (
+            3
+            ** max(
+                0,
+                int(_number(getattr(defender, "protect_counter", 0))),
+            )
+        )
+        if protected
+        else 0.0
+    )
+    estimates: list[dict[str, Any]] = []
+    unscored_move_ids: list[str] = []
+
+    for move in revealed_moves:
+        move_id = str(getattr(move, "id", ""))
+        category = _enum_name(getattr(move, "category", None))
+        effective_power, power_source = _effective_move_power(
+            move,
+            attacker,
+            defender,
+            own_conditions=attacker_conditions,
+            opponent_conditions=defender_conditions,
+            speed_relation=attacker_speed_relation,
+        )
+        if effective_power is None or effective_power <= 0:
+            unscored_move_ids.append(move_id)
+            continue
+        move_type = _effective_move_type(
+            attacker,
+            move,
+            terastallize=False,
+        )
+        type_multiplier = _type_multiplier_against_types(
+            move_type,
+            defender_types,
+            type_chart,
+        )
+        stab = _stab_multiplier(attacker, move_type, False)
+        attack_stat, defense_stat, stat_source = _offensive_stats(
+            attacker,
+            defender,
+            move,
+            terastallize=bool(
+                getattr(attacker, "is_terastallized", False)
+            ),
+        )
+        effective_category = (
+            "physical"
+            if stat_source == "tera_blast_physical"
+            else "special"
+            if stat_source == "tera_blast_special"
+            else category
+        )
+        battle_modifier, modifier_sources = _battle_damage_modifier(
+            attacker=attacker,
+            defender=defender,
+            move=move,
+            move_type=move_type,
+            category=effective_category,
+            defender_conditions=defender_conditions,
+            fields=fields,
+            weather=weather,
+            defender_types=defender_types,
+        )
+        expected_hits = max(
+            1.0,
+            _number(getattr(move, "expected_hits", 1.0)),
+        )
+        damage_range = _estimated_damage_fraction_range(
+            attacker,
+            defender,
+            power=effective_power,
+            attack_stat=attack_stat,
+            defense_stat=defense_stat,
+            stab=stab,
+            type_multiplier=type_multiplier,
+            expected_hits=expected_hits,
+            damage_modifier=battle_modifier,
+        )
+        raw_ko_probability = _estimated_ko_probability(
+            attacker,
+            defender,
+            power=effective_power,
+            attack_stat=attack_stat,
+            defense_stat=defense_stat,
+            stab=stab,
+            type_multiplier=type_multiplier,
+            expected_hits=expected_hits,
+            accuracy=_accuracy(getattr(move, "accuracy", 1.0)),
+            damage_modifier=battle_modifier,
+            remaining_hp_fraction=remaining_hp_fraction,
+        )
+        if raw_ko_probability is None:
+            unscored_move_ids.append(move_id)
+            continue
+        opponent_priority = int(_number(getattr(move, "priority", 0)))
+        acts_before_reply = (
+            True
+            if own_priority is None
+            else _acts_before(
+                own_priority,
+                opponent_priority,
+                speed_relation,
+            )
+        )
+        counter_ko_probability = raw_ko_probability
+        if protected and not bool(getattr(move, "breaks_protect", False)):
+            counter_ko_probability *= 1 - protect_success_probability
+        elif acts_before_reply is True and outgoing_ko_probability is not None:
+            counter_ko_probability *= 1 - outgoing_ko_probability
+        estimates.append(
+            {
+                "move_id": move_id,
+                "power_source": power_source,
+                "estimated_damage_fraction_range": (
+                    [round(value, 4) for value in damage_range]
+                    if damage_range is not None
+                    else None
+                ),
+                "raw_ko_probability": round(raw_ko_probability, 4),
+                "estimated_counter_ko_probability": round(
+                    counter_ko_probability,
+                    4,
+                ),
+                "player_acts_before_reply": acts_before_reply,
+                "type_multiplier": round(type_multiplier, 3),
+                "battle_modifier": round(battle_modifier, 4),
+                "modifier_sources": modifier_sources,
+            }
+        )
+
+    if not estimates:
+        return {
+            "available": False,
+            "revealed_moves_considered": len(revealed_moves),
+            "unscored_move_ids": sorted(set(unscored_move_ids)),
+            "risk": "unknown_no_scorable_revealed_damage",
+        }
+
+    worst = max(
+        estimates,
+        key=lambda estimate: (
+            float(estimate["estimated_counter_ko_probability"]),
+            (
+                float(estimate["estimated_damage_fraction_range"][1])
+                if estimate["estimated_damage_fraction_range"] is not None
+                else 0.0
+            ),
+        ),
+    )
+    counter_ko_probability = float(
+        worst["estimated_counter_ko_probability"]
+    )
+    if counter_ko_probability >= 0.5:
+        risk = "likely_counter_ko"
+    elif counter_ko_probability > 0:
+        risk = "possible_counter_ko"
+    else:
+        risk = "survives_known_reply"
+    return {
+        "available": True,
+        "basis": "revealed_opponent_moves",
+        "revealed_moves_considered": len(revealed_moves),
+        "scored_moves": len(estimates),
+        "unscored_move_ids": sorted(set(unscored_move_ids)),
+        "worst_move_id": worst["move_id"],
+        "incoming_damage_fraction_range": worst[
+            "estimated_damage_fraction_range"
+        ],
+        "raw_incoming_ko_probability": worst["raw_ko_probability"],
+        "estimated_counter_ko_probability": round(
+            counter_ko_probability,
+            4,
+        ),
+        "survival_probability": round(1 - counter_ko_probability, 4),
+        "player_acts_before_reply": worst["player_acts_before_reply"],
+        "type_multiplier": worst["type_multiplier"],
+        "battle_modifier": worst["battle_modifier"],
+        "modifier_sources": worst["modifier_sources"],
+        "protect_success_probability": (
+            round(protect_success_probability, 4)
+            if protected
+            else None
+        ),
+        "risk": risk,
+    }
+
+
+def _entry_hazard_estimate(
+    candidate: Any,
+    side_conditions: dict[Any, Any],
+    fields: dict[Any, Any],
+    battle_gen: int,
+) -> dict[str, Any]:
+    current_hp = _known_hp_fraction(candidate)
+    item = str(getattr(candidate, "item", "") or "")
+    ability = str(getattr(candidate, "ability", "") or "")
+    if item == "heavydutyboots":
+        return {
+            "damage_fraction": 0.0,
+            "post_entry_hp_fraction": current_hp,
+            "effects": ["heavy_duty_boots"],
+        }
+
+    type_chart = GenData.from_gen(battle_gen).type_chart
+    candidate_types = _defender_types_after_action(
+        candidate,
+        terastallize=False,
+    )
+    grounded = _is_grounded(candidate, fields, types=candidate_types)
+    damage = 0.0
+    effects: list[str] = []
+
+    if _has_named_effect(side_conditions, "stealth_rock"):
+        rock_multiplier = _type_multiplier_against_types(
+            PokemonType.ROCK,
+            candidate_types,
+            type_chart,
+        )
+        damage += rock_multiplier / 8
+        effects.append("stealth_rock")
+    if _has_named_effect(side_conditions, "g_max_steelsurge"):
+        steel_multiplier = _type_multiplier_against_types(
+            PokemonType.STEEL,
+            candidate_types,
+            type_chart,
+        )
+        damage += steel_multiplier / 8
+        effects.append("g_max_steelsurge")
+
+    spikes_layers = _condition_level(side_conditions, "spikes")
+    if grounded and spikes_layers:
+        damage += {1: 1 / 8, 2: 1 / 6, 3: 1 / 4}[
+            min(3, spikes_layers)
+        ]
+        effects.append(f"spikes_{min(3, spikes_layers)}")
+    if ability == "magicguard":
+        damage = 0.0
+        effects.append("magic_guard")
+
+    toxic_layers = _condition_level(side_conditions, "toxic_spikes")
+    if grounded and toxic_layers:
+        if _has_type(candidate_types, "poison"):
+            effects.append("absorbs_toxic_spikes")
+        elif not _has_type(candidate_types, "steel"):
+            effects.append(
+                "toxic_poison_risk" if toxic_layers >= 2 else "poison_risk"
+            )
+    if grounded and _has_named_effect(side_conditions, "sticky_web"):
+        effects.append("sticky_web_speed_drop")
+
+    post_entry_hp = (
+        max(0.0, current_hp - damage)
+        if current_hp is not None
+        else None
+    )
+    return {
+        "damage_fraction": round(damage, 4),
+        "post_entry_hp_fraction": (
+            round(post_entry_hp, 4)
+            if post_entry_hp is not None
+            else None
+        ),
+        "grounded": grounded,
+        "effects": effects,
+    }
+
+
 def _estimated_damage_fraction_range(
     active: Any,
     opponent: Any,
@@ -593,6 +1205,7 @@ def _estimated_damage_fraction_range(
     stab: float,
     type_multiplier: float,
     expected_hits: float,
+    damage_modifier: float = 1.0,
 ) -> tuple[float, float] | None:
     if power is None:
         return None
@@ -604,7 +1217,7 @@ def _estimated_damage_fraction_range(
         (((2 * level / 5) + 2) * power * attack_stat / max(defense_stat, 1.0))
         / 50
     ) + 2
-    modifier = stab * type_multiplier * expected_hits
+    modifier = stab * type_multiplier * expected_hits * damage_modifier
     return (
         max(0.0, base_damage * modifier * 0.85 / target_hp),
         max(0.0, base_damage * modifier / target_hp),
@@ -622,10 +1235,16 @@ def _estimated_ko_probability(
     type_multiplier: float,
     expected_hits: float,
     accuracy: float,
+    damage_modifier: float = 1.0,
+    remaining_hp_fraction: float | None = None,
 ) -> float | None:
     if power is None:
         return None
-    remaining_hp = _known_hp_fraction(opponent)
+    remaining_hp = (
+        remaining_hp_fraction
+        if remaining_hp_fraction is not None
+        else _known_hp_fraction(opponent)
+    )
     if remaining_hp is None:
         return None
     if power <= 0 or type_multiplier <= 0:
@@ -636,7 +1255,7 @@ def _estimated_ko_probability(
         (((2 * level / 5) + 2) * power * attack_stat / max(defense_stat, 1.0))
         / 50
     ) + 2
-    modifier = stab * type_multiplier * expected_hits
+    modifier = stab * type_multiplier * expected_hits * damage_modifier
     ko_rolls = sum(
         1
         for roll in (0.85 + index * 0.01 for index in range(16))
@@ -683,6 +1302,83 @@ def _known_hp_fraction(pokemon: Any) -> float | None:
     if fraction == 0 and _enum_name(getattr(pokemon, "status", None)) != "fnt":
         return None
     return fraction
+
+
+def _defender_types_after_action(
+    pokemon: Any,
+    *,
+    terastallize: bool,
+) -> list[Any]:
+    current_types = [
+        value
+        for value in (getattr(pokemon, "types", None) or [])
+        if value is not None
+    ]
+    tera_type = getattr(pokemon, "tera_type", None)
+    is_tera = terastallize or bool(
+        getattr(pokemon, "is_terastallized", False)
+    )
+    if not is_tera or tera_type is None:
+        return current_types
+    if _enum_name(tera_type) == "stellar":
+        return [
+            value
+            for value in (
+                getattr(pokemon, "base_types", None) or current_types
+            )
+            if value is not None
+        ]
+    return [tera_type]
+
+
+def _is_grounded(
+    pokemon: Any,
+    fields: dict[Any, Any],
+    *,
+    types: list[Any] | None = None,
+) -> bool:
+    if pokemon is None:
+        return True
+    if _has_named_effect(fields, "gravity"):
+        return True
+    item = str(getattr(pokemon, "item", "") or "")
+    if item == "ironball":
+        return True
+    effects = getattr(pokemon, "effects", None) or {}
+    if _has_any_named_effect(effects, {"magnetrise", "telekinesis"}):
+        return False
+    ability = str(getattr(pokemon, "ability", "") or "")
+    if ability == "levitate" or item == "airballoon":
+        return False
+    return not _has_type(
+        types or getattr(pokemon, "types", None),
+        "flying",
+    )
+
+
+def _acts_before(
+    own_priority: int,
+    opponent_priority: int,
+    speed_relation: str,
+) -> bool | None:
+    if own_priority > opponent_priority:
+        return True
+    if own_priority < opponent_priority:
+        return False
+    if speed_relation == "faster":
+        return True
+    if speed_relation == "slower":
+        return False
+    return None
+
+
+def _reverse_speed_relation(speed_relation: str) -> str:
+    return {
+        "faster": "slower",
+        "slower": "faster",
+        "tie": "tie",
+        "unknown": "unknown",
+    }[speed_relation]
 
 
 def _speed_relation(
@@ -909,6 +1605,32 @@ def _enum_name(value: Any) -> str | None:
 
 def _has_named_effect(values: dict[Any, Any], name: str) -> bool:
     return any(_enum_name(value) == name for value in values)
+
+
+def _has_any_named_effect(
+    values: dict[Any, Any],
+    names: set[str],
+) -> bool:
+    return any(_enum_name(value) in names for value in values)
+
+
+def _has_type(types: Any, name: str) -> bool:
+    return any(
+        _enum_name(value) == name
+        for value in (types or [])
+        if value is not None
+    )
+
+
+def _condition_level(values: dict[Any, Any], name: str) -> int:
+    return max(
+        (
+            max(1, int(_number(level)))
+            for condition, level in values.items()
+            if _enum_name(condition) == name
+        ),
+        default=0,
+    )
 
 
 def _species(pokemon: Any) -> str | None:
