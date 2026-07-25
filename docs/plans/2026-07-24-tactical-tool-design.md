@@ -121,3 +121,21 @@ The schema is `tactical-analysis-v2.1`. This remains a conservative one-reply
 calculator: it does not guess unrevealed moves, predict switches, model status
 move outcomes, or search multiple future turns. If no revealed damaging move
 can be scored, the counterplay result is explicitly marked unavailable.
+
+## Compact model transport
+
+The first v2.1 smoke battle showed that repeating every arithmetic intermediate
+for every legal action made the tool result much larger than v1. The calculator
+therefore produces two views from the same deterministic analysis:
+
+- the full `tactical-analysis-v2.1` object remains in the decision record,
+  tool-execution audit, and replay viewer;
+- the second model call receives `model-compact-v1`, containing only action
+  ranking, damage and KO estimates, survival risk, entry effects, Tera value,
+  and concise uncertainty markers.
+
+The compact view removes repeated estimated stats, raw counterplay
+intermediates, full limitation prose, and zero-value self-HP details. No
+calculation or action is removed from the audit record. Each tool execution
+records both serialized character counts so transport growth can be measured
+without relying only on provider token accounting.

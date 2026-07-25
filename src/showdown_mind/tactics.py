@@ -10,6 +10,7 @@ from poke_env.player.battle_order import SingleBattleOrder
 from showdown_mind.actions import ActionCatalog
 
 TACTICAL_ANALYSIS_SCHEMA = "tactical-analysis-v2.1"
+TACTICAL_MODEL_VIEW = "model-compact-v1"
 
 ENTRY_HAZARDS = {
     "ceaselessedge",
@@ -486,6 +487,159 @@ class TacticalAdvisor:
             "entry_hazards": entry_hazards,
             "counterplay": counterplay,
         }
+
+
+def compact_tactical_analysis_for_model(
+    analysis: dict[str, Any],
+) -> dict[str, Any]:
+    """Keep decision-relevant fields while the audit log retains full details."""
+    compact = {
+        "schema": analysis.get("schema"),
+        "view": TACTICAL_MODEL_VIEW,
+        "speed_relation": analysis.get("speed_relation"),
+        "best_damage_action_ids": analysis.get(
+            "best_damage_action_ids",
+            [],
+        ),
+        "best_ko_action_ids": analysis.get("best_ko_action_ids", []),
+        "best_ko_probability": analysis.get("best_ko_probability"),
+        "safest_action_ids": analysis.get("safest_action_ids", []),
+        "lowest_counter_ko_probability": analysis.get(
+            "lowest_counter_ko_probability"
+        ),
+        "best_switch_action_ids": analysis.get(
+            "best_switch_action_ids",
+            [],
+        ),
+        "actions": [
+            _compact_tactical_action(action)
+            for action in analysis.get("actions", [])
+        ],
+    }
+    return compact
+
+
+def _compact_tactical_action(action: dict[str, Any]) -> dict[str, Any]:
+    compact: dict[str, Any] = {
+        "action_id": action.get("action_id"),
+        "kind": action.get("kind"),
+    }
+    if action.get("kind") == "move":
+        _copy_present(
+            compact,
+            action,
+            (
+                "move_id",
+                "type_multiplier",
+                "estimated_damage_fraction_range",
+                "estimated_ko_probability",
+                "relative_damage",
+                "move_order",
+            ),
+        )
+        if action.get("power_source") != "fixed":
+            _copy_present(
+                compact,
+                action,
+                ("effective_power", "power_source"),
+            )
+        if _number(action.get("stab_multiplier")) > 1:
+            compact["stab_multiplier"] = action["stab_multiplier"]
+        if action.get("terastallize"):
+            compact["terastallize"] = True
+        if action.get("role_tags"):
+            compact["role_tags"] = action["role_tags"]
+        if action.get("modifier_sources"):
+            compact["modifier_sources"] = action["modifier_sources"]
+        self_hp_effect = action.get("self_hp_effect") or {}
+        if (
+            self_hp_effect.get("expected_net_change_fraction")
+            or self_hp_effect.get("self_ko_risk")
+        ):
+            compact["self_hp_effect"] = {
+                key: self_hp_effect[key]
+                for key in (
+                    "expected_net_change_fraction",
+                    "post_action_hp_fraction",
+                    "self_ko_risk",
+                )
+                if key in self_hp_effect
+            }
+        defensive_tera = action.get("defensive_tera") or {}
+        if defensive_tera:
+            compact["defensive_tera"] = {
+                key: defensive_tera[key]
+                for key in (
+                    "available",
+                    "tera_type",
+                    "max_stab_multiplier_before",
+                    "max_stab_multiplier_after",
+                    "verdict",
+                )
+                if key in defensive_tera
+            }
+    elif action.get("kind") == "switch":
+        _copy_present(
+            compact,
+            action,
+            (
+                "species",
+                "offensive_type_multiplier",
+                "defensive_weakness_multiplier",
+                "speed_relation",
+                "matchup_score",
+            ),
+        )
+        entry_hazards = action.get("entry_hazards") or {}
+        if entry_hazards.get("damage_fraction") or entry_hazards.get("effects"):
+            compact["entry_hazards"] = {
+                key: entry_hazards[key]
+                for key in (
+                    "damage_fraction",
+                    "post_entry_hp_fraction",
+                    "effects",
+                )
+                if key in entry_hazards
+            }
+    else:
+        _copy_present(compact, action, ("note",))
+
+    if action.get("counterplay"):
+        compact["counterplay"] = _compact_counterplay(
+            action["counterplay"]
+        )
+    return compact
+
+
+def _compact_counterplay(counterplay: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "risk",
+        "worst_move_id",
+        "incoming_damage_fraction_range",
+        "estimated_counter_ko_probability",
+        "player_acts_before_reply",
+        "protect_success_probability",
+        "unscored_move_ids",
+    )
+    compact = {
+        key: counterplay[key]
+        for key in keys
+        if key in counterplay
+        and counterplay[key] not in (None, [], {})
+    }
+    if counterplay.get("available") is False:
+        compact["available"] = False
+    return compact
+
+
+def _copy_present(
+    target: dict[str, Any],
+    source: dict[str, Any],
+    keys: tuple[str, ...],
+) -> None:
+    for key in keys:
+        if key in source and source[key] is not None:
+            target[key] = source[key]
 
 
 def _effective_move_power(

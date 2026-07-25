@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 from poke_env.battle import Move, Pokemon
@@ -5,7 +6,12 @@ from poke_env.player.battle_order import SingleBattleOrder
 
 from showdown_mind.actions import ActionCatalog, CatalogEntry
 from showdown_mind.domain import LegalAction
-from showdown_mind.tactics import TACTICAL_ANALYSIS_SCHEMA, TacticalAdvisor
+from showdown_mind.tactics import (
+    TACTICAL_ANALYSIS_SCHEMA,
+    TACTICAL_MODEL_VIEW,
+    TacticalAdvisor,
+    compact_tactical_analysis_for_model,
+)
 
 
 def move_entry(move_id: str, *, tera: bool = False) -> CatalogEntry:
@@ -263,3 +269,33 @@ def test_heavy_duty_boots_prevent_entry_hazard_effects() -> None:
     assert entry["damage_fraction"] == 0.0
     assert entry["post_entry_hp_fraction"] == 1.0
     assert entry["effects"] == ["heavy_duty_boots"]
+
+
+def test_model_view_is_smaller_but_keeps_decision_facts() -> None:
+    active = healthy_pokemon("Pikachu")
+    opponent = healthy_pokemon("Gyarados")
+    opponent.moved("earthquake")
+    full = TacticalAdvisor().analyze(
+        SimpleNamespace(
+            active_pokemon=active,
+            opponent_active_pokemon=opponent,
+        ),
+        ActionCatalog(
+            (
+                move_entry("thunderbolt"),
+                move_entry("protect"),
+            )
+        ),
+    )
+
+    compact = compact_tactical_analysis_for_model(full)
+
+    assert compact["schema"] == TACTICAL_ANALYSIS_SCHEMA
+    assert compact["view"] == TACTICAL_MODEL_VIEW
+    assert compact["safest_action_ids"] == ["move:protect"]
+    action = compact["actions"][0]
+    assert action["action_id"] == "move:thunderbolt"
+    assert action["counterplay"]["worst_move_id"] == "earthquake"
+    assert "attack_stat_estimate" not in action
+    assert "raw_incoming_ko_probability" not in action["counterplay"]
+    assert len(json.dumps(compact)) < len(json.dumps(full)) * 0.7

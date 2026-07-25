@@ -157,6 +157,8 @@ actions with the lowest modeled counter-KO risk. Supported variable-power moves
 use the current visible state; unknown dynamic moves remain explicitly
 unranked. The calculation does not inspect unrevealed opponent data and does
 not pretend hidden EVs, items, abilities, or moves are known.
+The model receives a compact decision view of these facts, while decision logs
+and the replay viewer retain the complete calculator output for auditing.
 Try it with the deterministic model boundary or the configured live model:
 
 ```bash

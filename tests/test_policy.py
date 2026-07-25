@@ -12,7 +12,10 @@ from showdown_mind.policy import (
     SingleCallPolicy,
     TacticalToolPolicy,
 )
-from showdown_mind.tactics import TACTICAL_ANALYSIS_SCHEMA
+from showdown_mind.tactics import (
+    TACTICAL_ANALYSIS_SCHEMA,
+    TACTICAL_MODEL_VIEW,
+)
 
 
 def catalog() -> ActionCatalog:
@@ -231,6 +234,13 @@ async def test_tactical_policy_executes_two_native_tools_in_order() -> None:
     assert history[0].tool_name == TACTICAL_TOOL_NAME
     assert history[0].tool_call_id == "scripted-tool-call-1"
     assert TACTICAL_ANALYSIS_SCHEMA in history[0].result
+    model_analysis = json.loads(history[0].result)
+    assert model_analysis["view"] == TACTICAL_MODEL_VIEW
+    assert "limitations" not in model_analysis
+    execution = result.tool_executions[0]
+    assert execution["model_result_characters"] < (
+        execution["audit_result_characters"]
+    )
 
 
 @pytest.mark.asyncio

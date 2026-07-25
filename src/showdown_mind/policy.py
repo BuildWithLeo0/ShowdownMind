@@ -28,7 +28,10 @@ from showdown_mind.policy_input import (
     CompiledPolicyInput,
     compile_policy_input,
 )
-from showdown_mind.tactics import TacticalAdvisor
+from showdown_mind.tactics import (
+    TacticalAdvisor,
+    compact_tactical_analysis_for_model,
+)
 
 MAX_RATIONALE_CHARACTERS = 240
 POLICY_MODES = ("direct", "tactical-tool")
@@ -520,8 +523,11 @@ class TacticalToolPolicy(SingleCallPolicy):
             raise AssertionError("validated tactical tool call must have an ID")
 
         tactical_analysis = self._tactical_advisor.analyze(battle, catalog)
+        model_analysis = compact_tactical_analysis_for_model(
+            tactical_analysis
+        )
         result_json = json.dumps(
-            tactical_analysis,
+            model_analysis,
             ensure_ascii=False,
             separators=(",", ":"),
             sort_keys=True,
@@ -538,6 +544,15 @@ class TacticalToolPolicy(SingleCallPolicy):
                 "tool_name": exchange.tool_name,
                 "arguments": {},
                 "result": tactical_analysis,
+                "audit_result_characters": len(
+                    json.dumps(
+                        tactical_analysis,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                ),
+                "model_result_characters": len(result_json),
             }
         )
 
