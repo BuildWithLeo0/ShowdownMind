@@ -19,6 +19,8 @@ from showdown_mind.policy_input import POLICY_INPUT_FORMATS
 
 EVALUATION_SCHEMA_VERSION = "1.0"
 COMPARISON_SCHEMA_VERSION = "1.0"
+EVALUATION_STATE_SCHEMA_VERSION = "resumable-evaluation-v1"
+ATTEMPT_SCHEMA_VERSION = "evaluation-attempt-v1"
 DEFAULT_OPPONENTS = ("max-base-power", "simple-heuristics")
 MIN_COMPARISON_BATTLES = 20
 BOOTSTRAP_ITERATIONS = 5_000
@@ -92,17 +94,35 @@ class EvaluationPlan:
 
     @property
     def total_runs(self) -> int:
-        return len(self.opponents) * self.repeats
+        return self.total_battles
 
     @property
     def total_battles(self) -> int:
-        return self.total_runs * self.battles_per_opponent
+        return (
+            len(self.opponents)
+            * self.repeats
+            * self.battles_per_opponent
+        )
 
     @property
     def effective_run_timeout_seconds(self) -> float:
-        return self.run_timeout_seconds or max(
-            300.0,
-            self.battles_per_opponent * 300.0,
+        return self.run_timeout_seconds or 300.0
+
+    def matrix(self) -> tuple[dict[str, Any], ...]:
+        return tuple(
+            {
+                "opponent": opponent,
+                "repeat": repeat,
+                "battle_index": battle_index,
+                "checkpoint_id": _checkpoint_id(
+                    opponent,
+                    repeat,
+                    battle_index,
+                ),
+            }
+            for opponent in self.opponents
+            for repeat in range(1, self.repeats + 1)
+            for battle_index in range(1, self.battles_per_opponent + 1)
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -121,6 +141,8 @@ class EvaluationPlan:
             "stop_on_quality_failure": self.stop_on_quality_failure,
             "quality_thresholds": FINAL_QUALITY_THRESHOLDS,
             "hard_stop_thresholds": HARD_STOP_THRESHOLDS,
+            "checkpointing": EVALUATION_STATE_SCHEMA_VERSION,
+            "resume_supported": True,
         }
 
     def preview(self) -> dict[str, Any]:
@@ -128,15 +150,7 @@ class EvaluationPlan:
             "mode": "dry-run",
             "will_call_model": False,
             "plan": self.to_dict(),
-            "matrix": [
-                {
-                    "opponent": opponent,
-                    "repeat": repeat,
-                    "battles": self.battles_per_opponent,
-                }
-                for opponent in self.opponents
-                for repeat in range(1, self.repeats + 1)
-            ],
+            "matrix": list(self.matrix()),
             "warning": (
                 "No files or API calls were made. Add --run to execute; "
                 "exact token cost is unknown."
@@ -150,89 +164,212 @@ async def run_evaluation(
     *,
     battle_runner: BattleRunner = run_agent_battles,
     connectivity_checker: ConnectivityChecker = run_model_check,
+    resume: bool = False,
 ) -> dict[str, Any]:
-    if plan.output_dir.exists():
-        raise ValueError(f"evaluation output already exists: {plan.output_dir}")
-    plan.output_dir.mkdir(parents=True)
-    runs_dir = plan.output_dir / "runs"
-    runs_dir.mkdir()
-    _write_json(plan.output_dir / "plan.json", plan.to_dict())
-
-    created_at = datetime.now(UTC).isoformat()
-    git_commit, git_dirty = git_state()
-    runs: list[dict[str, Any]] = []
-    preflight: dict[str, Any] | None = None
-    try:
-        check = await connectivity_checker(
-            model_client,
-            prompt_format=plan.prompt_format,
-            policy_mode=plan.policy_mode,
+    state_path = plan.output_dir / "evaluation-state.json"
+    if resume:
+        state = _load_resume_state(
+            state_path,
+            plan=plan,
+            model_client=model_client,
         )
-        preflight = check.to_dict()
-        for opponent in plan.opponents:
-            for repeat in range(1, plan.repeats + 1):
-                stem = f"{opponent}-r{repeat:02d}"
-                decision_log = runs_dir / f"{stem}.jsonl"
+    else:
+        if plan.output_dir.exists():
+            raise ValueError(
+                f"evaluation output already exists: {plan.output_dir}; "
+                "use --resume to continue it"
+            )
+        plan.output_dir.mkdir(parents=True)
+        git_commit, git_dirty = git_state()
+        state = {
+            "schema_version": EVALUATION_STATE_SCHEMA_VERSION,
+            "status": "created",
+            "created_at": datetime.now(UTC).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
+            "plan": plan.to_dict(),
+            "provenance": {
+                "model_id": str(
+                    getattr(
+                        model_client,
+                        "model_id",
+                        type(model_client).__name__,
+                    )
+                ),
+                "git_commit": git_commit,
+                "git_dirty": git_dirty,
+            },
+            "preflight": None,
+        }
+        _write_json(state_path, state)
+        _write_json(plan.output_dir / "plan.json", plan.to_dict())
+
+    runs_dir = plan.output_dir / "runs"
+    runs_dir.mkdir(exist_ok=True)
+
+    created_at = str(state["created_at"])
+    provenance = dict(state["provenance"])
+    attempts = _recover_attempts(
+        runs_dir,
+        plan=plan,
+    )
+    runs = _accepted_runs(plan, attempts)
+    preflight = state.get("preflight")
+    try:
+        if preflight is None:
+            check = await connectivity_checker(
+                model_client,
+                prompt_format=plan.prompt_format,
+                policy_mode=plan.policy_mode,
+            )
+            preflight = check.to_dict()
+            state["preflight"] = preflight
+            _update_evaluation_state(state_path, state, status="in_progress")
+        _write_progress_report(
+            plan=plan,
+            status="in_progress",
+            created_at=created_at,
+            provenance=provenance,
+            preflight=preflight,
+            runs=runs,
+            attempts=attempts,
+            failure=None,
+        )
+
+        accepted_ids = {
+            str(run["checkpoint_id"])
+            for run in runs
+        }
+        for cell in plan.matrix():
+            checkpoint_id = str(cell["checkpoint_id"])
+            if checkpoint_id in accepted_ids:
+                continue
+            attempt_number = _next_attempt_number(attempts, checkpoint_id)
+            attempt_id = f"{checkpoint_id}-a{attempt_number:02d}"
+            decision_log = runs_dir / f"{attempt_id}.jsonl"
+            attempt_path = runs_dir / f"{attempt_id}.attempt.json"
+            attempt_record = {
+                "schema_version": ATTEMPT_SCHEMA_VERSION,
+                "attempt_id": attempt_id,
+                "checkpoint_id": checkpoint_id,
+                "opponent": cell["opponent"],
+                "repeat": cell["repeat"],
+                "battle_index": cell["battle_index"],
+                "attempt": attempt_number,
+                "status": "running",
+                "started_at": datetime.now(UTC).isoformat(),
+                "updated_at": datetime.now(UTC).isoformat(),
+                "decision_log": str(decision_log),
+            }
+            _write_json(attempt_path, attempt_record)
+            attempt_finalized = False
+            try:
                 result = await battle_runner(
                     model_client,
-                    opponent_name=opponent,
-                    battles=plan.battles_per_opponent,
+                    opponent_name=str(cell["opponent"]),
+                    battles=1,
                     decision_log=decision_log,
                     timeout_seconds=plan.effective_run_timeout_seconds,
                     prompt_format=plan.prompt_format,
                     policy_mode=plan.policy_mode,
                 )
                 completed_run = _completed_run(
-                    opponent=opponent,
-                    repeat=repeat,
+                    opponent=str(cell["opponent"]),
+                    repeat=int(cell["repeat"]),
+                    battle_index=int(cell["battle_index"]),
+                    attempt=attempt_number,
                     result=result,
                     decision_log=decision_log,
                 )
-                runs.append(completed_run)
                 hard_quality = assess_quality(
                     aggregate_runs([completed_run]),
                     thresholds=HARD_STOP_THRESHOLDS,
                     policy_mode=plan.policy_mode,
                 )
                 completed_run["quality"] = hard_quality
-                if plan.stop_on_quality_failure and hard_quality["status"] == "invalid":
+                accepted = not (
+                    plan.stop_on_quality_failure
+                    and hard_quality["status"] == "invalid"
+                )
+                attempt_record.update(
+                    {
+                        "status": "accepted" if accepted else "rejected",
+                        "updated_at": datetime.now(UTC).isoformat(),
+                        "finished_at": datetime.now(UTC).isoformat(),
+                        "run": completed_run,
+                    }
+                )
+                _write_json(attempt_path, attempt_record)
+                attempt_finalized = True
+                attempts.append(attempt_record)
+                if not accepted:
                     details = "; ".join(hard_quality["violations"])
                     raise EvaluationQualityError(
-                        f"run {stem} crossed the quality stop gate: {details}"
+                        f"checkpoint {checkpoint_id} crossed the quality "
+                        f"stop gate: {details}"
                     )
+                runs.append(completed_run)
+                accepted_ids.add(checkpoint_id)
+                _write_progress_report(
+                    plan=plan,
+                    status="in_progress",
+                    created_at=created_at,
+                    provenance=provenance,
+                    preflight=preflight,
+                    runs=runs,
+                    attempts=attempts,
+                    failure=None,
+                )
+            except Exception as exc:
+                if not attempt_finalized:
+                    attempt_record.update(
+                        {
+                            "status": "interrupted",
+                            "updated_at": datetime.now(UTC).isoformat(),
+                            "finished_at": datetime.now(UTC).isoformat(),
+                            "failure": {
+                                "error_type": type(exc).__name__,
+                                "message": _failure_detail(exc),
+                            },
+                            "decision_metrics": _partial_decision_metrics(
+                                decision_log
+                            ),
+                        }
+                    )
+                    _write_json(attempt_path, attempt_record)
+                    attempts.append(attempt_record)
+                raise
     except Exception as exc:
         safe_message = _failure_detail(exc)
-        report = _evaluation_report(
+        _update_evaluation_state(state_path, state, status="incomplete")
+        report = _write_progress_report(
             plan=plan,
             status="incomplete",
             created_at=created_at,
-            model_client=model_client,
-            git_commit=git_commit,
-            git_dirty=git_dirty,
+            provenance=provenance,
             preflight=preflight,
             runs=runs,
+            attempts=attempts,
             failure={
                 "error_type": type(exc).__name__,
                 "message": safe_message,
             },
         )
-        _write_evaluation_report(plan.output_dir, report)
         raise EvaluationError(
-            f"evaluation stopped after {len(runs)} completed runs: {safe_message}"
+            f"evaluation stopped after {len(runs)} accepted battles; "
+            f"resume with --resume: {safe_message}"
         ) from exc
 
-    report = _evaluation_report(
+    _update_evaluation_state(state_path, state, status="complete")
+    report = _write_progress_report(
         plan=plan,
         status="complete",
         created_at=created_at,
-        model_client=model_client,
-        git_commit=git_commit,
-        git_dirty=git_dirty,
+        provenance=provenance,
         preflight=preflight,
         runs=runs,
+        attempts=attempts,
         failure=None,
     )
-    _write_evaluation_report(plan.output_dir, report)
     return report
 
 
@@ -240,22 +377,252 @@ def _completed_run(
     *,
     opponent: str,
     repeat: int,
+    battle_index: int,
+    attempt: int,
     result: AgentSmokeResult,
     decision_log: Path,
 ) -> dict[str, Any]:
+    if result.requested_battles != 1 or result.finished_battles != 1:
+        raise ValueError(
+            "resumable evaluation checkpoints must contain exactly one battle"
+        )
     outcomes = (
         ["win"] * result.agent_wins
         + ["loss"] * result.opponent_wins
         + ["draw"] * result.draws
     )
+    if len(outcomes) != 1:
+        raise ValueError("checkpoint result must contain exactly one outcome")
     return {
         "status": "complete",
         "opponent": opponent,
         "repeat": repeat,
+        "battle_index": battle_index,
+        "attempt": attempt,
+        "checkpoint_id": _checkpoint_id(opponent, repeat, battle_index),
         "outcomes": outcomes,
         "result": result.to_dict(),
         "decision_metrics": summarize_decision_log(decision_log),
     }
+
+
+def _checkpoint_id(opponent: str, repeat: int, battle_index: int) -> str:
+    return f"{opponent}-r{repeat:02d}-b{battle_index:03d}"
+
+
+def _load_resume_state(
+    path: Path,
+    *,
+    plan: EvaluationPlan,
+    model_client: ModelClient,
+) -> dict[str, Any]:
+    if not path.is_file():
+        raise ValueError(
+            f"evaluation cannot be resumed because state is missing: {path}"
+        )
+    state = _read_json_object(path)
+    if state.get("schema_version") != EVALUATION_STATE_SCHEMA_VERSION:
+        raise ValueError("evaluation uses an incompatible checkpoint schema")
+    if state.get("plan") != plan.to_dict():
+        raise ValueError(
+            "resume plan does not exactly match the saved evaluation plan"
+        )
+    git_commit, git_dirty = git_state()
+    current = {
+        "model_id": str(
+            getattr(model_client, "model_id", type(model_client).__name__)
+        ),
+        "git_commit": git_commit,
+        "git_dirty": git_dirty,
+    }
+    saved = state.get("provenance")
+    if saved != current:
+        raise ValueError(
+            "resume provenance does not match the saved model, Git commit, "
+            "or dirty state"
+        )
+    return state
+
+
+def _recover_attempts(
+    runs_dir: Path,
+    *,
+    plan: EvaluationPlan,
+) -> list[dict[str, Any]]:
+    allowed = {
+        str(cell["checkpoint_id"])
+        for cell in plan.matrix()
+    }
+    attempts: list[dict[str, Any]] = []
+    for path in sorted(runs_dir.glob("*.attempt.json")):
+        attempt = _read_json_object(path)
+        if attempt.get("schema_version") != ATTEMPT_SCHEMA_VERSION:
+            raise ValueError(f"incompatible attempt record: {path}")
+        checkpoint_id = str(attempt.get("checkpoint_id") or "")
+        if checkpoint_id not in allowed:
+            raise ValueError(
+                f"attempt does not belong to the saved matrix: {path}"
+            )
+        if attempt.get("status") == "running":
+            attempt = _recover_running_attempt(
+                path,
+                attempt,
+                plan=plan,
+            )
+        attempts.append(attempt)
+    return attempts
+
+
+def _recover_running_attempt(
+    path: Path,
+    attempt: dict[str, Any],
+    *,
+    plan: EvaluationPlan,
+) -> dict[str, Any]:
+    attempt_id = str(attempt["attempt_id"])
+    summary_path = path.with_name(f"{attempt_id}.summary.json")
+    decision_log = path.with_name(f"{attempt_id}.jsonl")
+    if summary_path.is_file() and decision_log.is_file():
+        result = _agent_result_from_summary(summary_path)
+        completed_run = _completed_run(
+            opponent=str(attempt["opponent"]),
+            repeat=int(attempt["repeat"]),
+            battle_index=int(attempt["battle_index"]),
+            attempt=int(attempt["attempt"]),
+            result=result,
+            decision_log=decision_log,
+        )
+        hard_quality = assess_quality(
+            aggregate_runs([completed_run]),
+            thresholds=HARD_STOP_THRESHOLDS,
+            policy_mode=plan.policy_mode,
+        )
+        completed_run["quality"] = hard_quality
+        accepted = not (
+            plan.stop_on_quality_failure
+            and hard_quality["status"] == "invalid"
+        )
+        attempt.update(
+            {
+                "status": "accepted" if accepted else "rejected",
+                "updated_at": datetime.now(UTC).isoformat(),
+                "finished_at": datetime.now(UTC).isoformat(),
+                "run": completed_run,
+                "recovered_after_process_exit": True,
+            }
+        )
+    else:
+        attempt.update(
+            {
+                "status": "abandoned",
+                "updated_at": datetime.now(UTC).isoformat(),
+                "finished_at": datetime.now(UTC).isoformat(),
+                "failure": {
+                    "error_type": "ProcessInterrupted",
+                    "message": (
+                        "The process ended before this battle produced a "
+                        "complete summary."
+                    ),
+                },
+                "decision_metrics": _partial_decision_metrics(decision_log),
+            }
+        )
+    _write_json(path, attempt)
+    return attempt
+
+
+def _agent_result_from_summary(path: Path) -> AgentSmokeResult:
+    value = _read_json_object(path)
+    allowed = AgentSmokeResult.__dataclass_fields__
+    arguments = {
+        key: value[key]
+        for key in allowed
+        if key in value
+    }
+    return AgentSmokeResult(**arguments)
+
+
+def _accepted_runs(
+    plan: EvaluationPlan,
+    attempts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    accepted: dict[str, dict[str, Any]] = {}
+    for attempt in attempts:
+        if attempt.get("status") != "accepted":
+            continue
+        checkpoint_id = str(attempt["checkpoint_id"])
+        if checkpoint_id in accepted:
+            raise ValueError(
+                f"multiple accepted attempts exist for {checkpoint_id}"
+            )
+        run = attempt.get("run")
+        if not isinstance(run, dict):
+            raise ValueError(
+                f"accepted attempt is missing its run: {checkpoint_id}"
+            )
+        accepted[checkpoint_id] = run
+    return [
+        accepted[str(cell["checkpoint_id"])]
+        for cell in plan.matrix()
+        if str(cell["checkpoint_id"]) in accepted
+    ]
+
+
+def _next_attempt_number(
+    attempts: list[dict[str, Any]],
+    checkpoint_id: str,
+) -> int:
+    prior = [
+        int(attempt.get("attempt", 0))
+        for attempt in attempts
+        if attempt.get("checkpoint_id") == checkpoint_id
+    ]
+    return max(prior, default=0) + 1
+
+
+def _partial_decision_metrics(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        return summarize_decision_log(path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+
+
+def _update_evaluation_state(
+    path: Path,
+    state: dict[str, Any],
+    *,
+    status: str,
+) -> None:
+    state["status"] = status
+    state["updated_at"] = datetime.now(UTC).isoformat()
+    _write_json(path, state)
+
+
+def _write_progress_report(
+    *,
+    plan: EvaluationPlan,
+    status: str,
+    created_at: str,
+    provenance: dict[str, Any],
+    preflight: dict[str, Any] | None,
+    runs: list[dict[str, Any]],
+    attempts: list[dict[str, Any]],
+    failure: dict[str, str] | None,
+) -> dict[str, Any]:
+    report = _evaluation_report(
+        plan=plan,
+        status=status,
+        created_at=created_at,
+        provenance=provenance,
+        preflight=preflight,
+        runs=runs,
+        attempts=attempts,
+        failure=failure,
+    )
+    _write_evaluation_report(plan.output_dir, report)
+    return report
 
 
 def summarize_decision_log(path: Path) -> dict[str, Any]:
@@ -450,38 +817,59 @@ def _evaluation_report(
     plan: EvaluationPlan,
     status: str,
     created_at: str,
-    model_client: ModelClient,
-    git_commit: str | None,
-    git_dirty: bool | None,
+    provenance: dict[str, Any],
     preflight: dict[str, Any] | None,
     runs: list[dict[str, Any]],
+    attempts: list[dict[str, Any]],
     failure: dict[str, str] | None,
 ) -> dict[str, Any]:
     overall = aggregate_runs(runs)
     preflight_tokens = int((preflight or {}).get("total_tokens", 0))
+    excluded_attempts = [
+        attempt
+        for attempt in attempts
+        if attempt.get("status") != "accepted"
+    ]
+    excluded_tokens = sum(
+        int(_attempt_metrics(attempt).get("total_tokens", 0))
+        for attempt in excluded_attempts
+    )
     quality = assess_quality(overall, policy_mode=plan.policy_mode)
     report = {
         "schema_version": EVALUATION_SCHEMA_VERSION,
         "status": status,
         "name": plan.name,
         "created_at": created_at,
-        "finished_at": datetime.now(UTC).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
+        "finished_at": (
+            datetime.now(UTC).isoformat()
+            if status == "complete"
+            else None
+        ),
         "plan": plan.to_dict(),
-        "provenance": {
-            "model_id": str(
-                getattr(model_client, "model_id", type(model_client).__name__)
-            ),
-            "git_commit": git_commit,
-            "git_dirty": git_dirty,
-        },
+        "provenance": provenance,
         "preflight": preflight,
         "runs": runs,
+        "attempts": [_attempt_report_view(attempt) for attempt in attempts],
+        "progress": {
+            "target_battles": plan.total_battles,
+            "accepted_battles": len(runs),
+            "remaining_battles": max(0, plan.total_battles - len(runs)),
+            "attempts": len(attempts),
+            "excluded_attempts": len(excluded_attempts),
+            "resume_supported": True,
+        },
         "overall": overall,
         "quality": quality,
         "cost_accounting": {
             "battle_total_tokens": overall["total_tokens"],
             "preflight_total_tokens": preflight_tokens,
-            "evaluation_total_tokens": overall["total_tokens"] + preflight_tokens,
+            "excluded_attempt_total_tokens": excluded_tokens,
+            "evaluation_total_tokens": (
+                overall["total_tokens"]
+                + preflight_tokens
+                + excluded_tokens
+            ),
         },
         "by_opponent": {
             opponent: aggregate_runs(
@@ -493,6 +881,45 @@ def _evaluation_report(
     if failure is not None:
         report["failure"] = failure
     return report
+
+
+def _attempt_metrics(attempt: dict[str, Any]) -> dict[str, Any]:
+    run = attempt.get("run")
+    if isinstance(run, dict):
+        metrics = run.get("decision_metrics")
+        if isinstance(metrics, dict):
+            return metrics
+    metrics = attempt.get("decision_metrics")
+    return metrics if isinstance(metrics, dict) else {}
+
+
+def _attempt_report_view(attempt: dict[str, Any]) -> dict[str, Any]:
+    metrics = _attempt_metrics(attempt)
+    value = {
+        key: attempt[key]
+        for key in (
+            "attempt_id",
+            "checkpoint_id",
+            "opponent",
+            "repeat",
+            "battle_index",
+            "attempt",
+            "status",
+            "started_at",
+            "finished_at",
+            "decision_log",
+            "recovered_after_process_exit",
+            "failure",
+        )
+        if key in attempt
+    }
+    value["decisions"] = int(metrics.get("decisions", 0))
+    value["total_tokens"] = int(metrics.get("total_tokens", 0))
+    run = attempt.get("run")
+    if isinstance(run, dict):
+        value["outcomes"] = list(run.get("outcomes") or [])
+        value["quality"] = run.get("quality", {})
+    return value
 
 
 def aggregate_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1024,6 +1451,16 @@ def render_evaluation_markdown(report: dict[str, Any]) -> str:
         f"- Policy: `{report['plan'].get('policy_mode', 'direct')}`",
         f"- Git commit: `{report['provenance']['git_commit']}`",
         f"- Battles: {overall['battles']}",
+        (
+            "- Progress: "
+            f"{report.get('progress', {}).get('accepted_battles', overall['battles'])}"
+            "/"
+            f"{report.get('progress', {}).get('target_battles', overall['battles'])}"
+        ),
+        (
+            "- Excluded attempts: "
+            f"{report.get('progress', {}).get('excluded_attempts', 0)}"
+        ),
         f"- Research quality: `{report['quality']['status']}`",
         "",
         "## Outcomes",
@@ -1184,6 +1621,13 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
         path,
         json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
     )
+
+
+def _read_json_object(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"JSON artifact must be an object: {path}")
+    return value
 
 
 def _write_text(path: Path, value: str) -> None:

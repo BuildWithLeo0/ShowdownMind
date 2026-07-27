@@ -195,7 +195,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir",
         type=Path,
         required=True,
-        help="new directory for the evaluation report and per-run artifacts",
+        help=(
+            "new evaluation directory, or the saved directory with --resume"
+        ),
     )
     evaluate.add_argument(
         "--opponents",
@@ -224,6 +226,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--run",
         action="store_true",
         help="execute live model calls; without this flag only preview the plan",
+    )
+    evaluate.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "continue an interrupted evaluation without rerunning accepted "
+            "battles"
+        ),
     )
     evaluate.add_argument(
         "--no-manage-server",
@@ -375,13 +385,19 @@ def _run_evaluate(args: argparse.Namespace) -> int:
         run_timeout_seconds=args.run_timeout,
     )
     if not args.run:
+        if getattr(args, "resume", False):
+            raise ValueError("--resume requires --run")
         print(json.dumps(plan.preview(), indent=2, sort_keys=True))
         return 0
 
     async def execute() -> None:
         client = live_model_client_from_env()
         try:
-            report = await run_evaluation(client, plan)
+            report = await run_evaluation(
+                client,
+                plan,
+                resume=getattr(args, "resume", False),
+            )
         finally:
             await client.aclose()
         print(

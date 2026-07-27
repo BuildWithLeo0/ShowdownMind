@@ -52,6 +52,31 @@ def write_decisions(path: Path, records: list[dict]) -> None:
     )
 
 
+def _one_battle_result(path: Path, opponent: str) -> AgentSmokeResult:
+    return AgentSmokeResult(
+        battle_format="gen9randombattle",
+        prompt_format="pruned-v1",
+        opponent=opponent,
+        requested_battles=1,
+        finished_battles=1,
+        agent_wins=1,
+        opponent_wins=0,
+        draws=0,
+        decisions=1,
+        model_calls=1,
+        fallbacks=0,
+        input_tokens=10,
+        output_tokens=5,
+        total_tokens=15,
+        model_input_characters=1200,
+        elapsed_seconds=2.0,
+        decision_log=str(path),
+        manifest_path=str(path.with_suffix(".manifest.json")),
+        summary_path=str(path.with_suffix(".summary.json")),
+        failure_path=str(path.with_suffix(".failure.json")),
+    )
+
+
 def run_entry(opponent: str, outcomes: list[str]) -> dict:
     decisions = len(outcomes)
     metrics = {
@@ -121,9 +146,10 @@ def test_plan_preview_is_read_only_and_counts_matrix(tmp_path) -> None:
     preview = plan.preview()
 
     assert preview["will_call_model"] is False
-    assert preview["plan"]["total_runs"] == 4
+    assert preview["plan"]["total_runs"] == 12
     assert preview["plan"]["total_battles"] == 12
-    assert len(preview["matrix"]) == 4
+    assert len(preview["matrix"]) == 12
+    assert preview["matrix"][0]["checkpoint_id"] == "random-r01-b001"
     assert not output.exists()
 
 
@@ -283,10 +309,10 @@ async def test_runs_matrix_and_writes_reports(tmp_path) -> None:
             battle_format="gen9randombattle",
             prompt_format="pruned-v1",
             opponent=opponent,
-            requested_battles=2,
-            finished_battles=2,
+            requested_battles=1,
+            finished_battles=1,
             agent_wins=1,
-            opponent_wins=1,
+            opponent_wins=0,
             draws=0,
             decisions=2,
             model_calls=2,
@@ -320,11 +346,227 @@ async def test_runs_matrix_and_writes_reports(tmp_path) -> None:
     assert result["status"] == "complete"
     assert result["quality"]["status"] == "valid"
     assert result["overall"]["battles"] == 4
-    assert result["cost_accounting"]["evaluation_total_tokens"] == 62
-    assert len(result["runs"]) == 2
+    assert result["cost_accounting"]["evaluation_total_tokens"] == 122
+    assert len(result["runs"]) == 4
+    assert result["progress"]["accepted_battles"] == 4
     assert (output / "plan.json").is_file()
     assert (output / "report.json").is_file()
     assert "Evaluation: v0" in (output / "report.md").read_text()
+
+
+@pytest.mark.asyncio
+async def test_resume_skips_accepted_battles_and_retries_interrupted_cell(
+    tmp_path,
+) -> None:
+    class FakeClient:
+        model_id = "fake-model"
+
+    check_calls = 0
+
+    async def fake_check(*args, **kwargs):
+        nonlocal check_calls
+        check_calls += 1
+        return ModelCheckResult(
+            model_id="fake-model",
+            prompt_format="pruned-v1",
+            model_input_characters=10,
+            action_id="move:tackle",
+            confidence=0.8,
+            reason_codes=("DAMAGE",),
+            short_rationale="Use reliable damage.",
+            tool_call_id="call-check",
+            attempts=1,
+            input_tokens=1,
+            output_tokens=1,
+            total_tokens=2,
+        )
+
+    first_calls = 0
+
+    async def interrupted_runner(*args, **kwargs):
+        nonlocal first_calls
+        first_calls += 1
+        path = kwargs["decision_log"]
+        write_decisions(path, [decision_record()])
+        if first_calls == 2:
+            raise RuntimeError("insufficient balance")
+        return _one_battle_result(path, kwargs["opponent_name"])
+
+    output = tmp_path / "resumable"
+    plan = EvaluationPlan(
+        name="resumable",
+        output_dir=output,
+        opponents=("max-base-power",),
+        battles_per_opponent=3,
+    )
+
+    with pytest.raises(EvaluationError, match="resume with --resume"):
+        await run_evaluation(
+            FakeClient(),
+            plan,
+            battle_runner=interrupted_runner,
+            connectivity_checker=fake_check,
+        )
+
+    incomplete = json.loads((output / "report.json").read_text())
+    assert incomplete["progress"]["accepted_battles"] == 1
+    assert incomplete["progress"]["remaining_battles"] == 2
+    assert incomplete["attempts"][0]["attempt_id"].endswith("b001-a01")
+    assert incomplete["attempts"][1]["status"] == "interrupted"
+
+    resumed_calls: list[str] = []
+
+    async def resumed_runner(*args, **kwargs):
+        path = kwargs["decision_log"]
+        resumed_calls.append(path.stem)
+        write_decisions(path, [decision_record()])
+        return _one_battle_result(path, kwargs["opponent_name"])
+
+    async def unexpected_check(*args, **kwargs):
+        raise AssertionError("saved successful preflight must be reused")
+
+    complete = await run_evaluation(
+        FakeClient(),
+        plan,
+        battle_runner=resumed_runner,
+        connectivity_checker=unexpected_check,
+        resume=True,
+    )
+
+    assert complete["status"] == "complete"
+    assert complete["progress"]["accepted_battles"] == 3
+    assert complete["progress"]["excluded_attempts"] == 1
+    assert complete["cost_accounting"]["excluded_attempt_total_tokens"] == 15
+    assert resumed_calls == [
+        "max-base-power-r01-b002-a02",
+        "max-base-power-r01-b003-a01",
+    ]
+    assert check_calls == 1
+
+    async def unexpected_runner(*args, **kwargs):
+        raise AssertionError("complete checkpoints must not rerun")
+
+    repeated = await run_evaluation(
+        FakeClient(),
+        plan,
+        battle_runner=unexpected_runner,
+        connectivity_checker=unexpected_check,
+        resume=True,
+    )
+    assert repeated["status"] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_resume_recovers_summary_written_before_attempt_finalization(
+    tmp_path,
+) -> None:
+    class FakeClient:
+        model_id = "fake-model"
+
+    async def fake_check(*args, **kwargs):
+        return ModelCheckResult(
+            model_id="fake-model",
+            prompt_format="pruned-v1",
+            model_input_characters=10,
+            action_id="move:tackle",
+            confidence=0.8,
+            reason_codes=("DAMAGE",),
+            short_rationale="Use reliable damage.",
+            tool_call_id="call-check",
+            attempts=1,
+            input_tokens=1,
+            output_tokens=1,
+            total_tokens=2,
+        )
+
+    async def fake_runner(*args, **kwargs):
+        path = kwargs["decision_log"]
+        write_decisions(path, [decision_record()])
+        result = _one_battle_result(path, kwargs["opponent_name"])
+        path.with_suffix(".summary.json").write_text(
+            json.dumps(result.to_dict()),
+            encoding="utf-8",
+        )
+        return result
+
+    output = tmp_path / "crash-recovery"
+    plan = EvaluationPlan(
+        name="crash-recovery",
+        output_dir=output,
+        opponents=("random",),
+        battles_per_opponent=1,
+    )
+    await run_evaluation(
+        FakeClient(),
+        plan,
+        battle_runner=fake_runner,
+        connectivity_checker=fake_check,
+    )
+
+    attempt_path = next((output / "runs").glob("*.attempt.json"))
+    attempt = json.loads(attempt_path.read_text())
+    attempt["status"] = "running"
+    attempt.pop("run")
+    attempt_path.write_text(json.dumps(attempt), encoding="utf-8")
+
+    async def unexpected_runner(*args, **kwargs):
+        raise AssertionError("completed summary must be recovered")
+
+    report = await run_evaluation(
+        FakeClient(),
+        plan,
+        battle_runner=unexpected_runner,
+        resume=True,
+    )
+
+    assert report["status"] == "complete"
+    assert report["attempts"][0]["recovered_after_process_exit"] is True
+
+
+@pytest.mark.asyncio
+async def test_resume_rejects_changed_plan_or_model(tmp_path) -> None:
+    class FakeClient:
+        model_id = "fake-model"
+
+    async def failed_check(*args, **kwargs):
+        raise RuntimeError("offline")
+
+    output = tmp_path / "locked"
+    plan = EvaluationPlan(
+        name="locked",
+        output_dir=output,
+        opponents=("random",),
+        battles_per_opponent=1,
+    )
+    with pytest.raises(EvaluationError):
+        await run_evaluation(
+            FakeClient(),
+            plan,
+            connectivity_checker=failed_check,
+        )
+
+    changed_plan = EvaluationPlan(
+        name="locked",
+        output_dir=output,
+        opponents=("random",),
+        battles_per_opponent=2,
+    )
+    with pytest.raises(ValueError, match="plan does not exactly match"):
+        await run_evaluation(
+            FakeClient(),
+            changed_plan,
+            resume=True,
+        )
+
+    class OtherClient:
+        model_id = "other-model"
+
+    with pytest.raises(ValueError, match="provenance"):
+        await run_evaluation(
+            OtherClient(),
+            plan,
+            resume=True,
+        )
 
 
 @pytest.mark.asyncio
@@ -442,8 +684,10 @@ async def test_hard_quality_gate_stops_before_next_opponent(tmp_path) -> None:
     assert opponents_run == ["random"]
     saved = json.loads((output / "report.json").read_text())
     assert saved["status"] == "incomplete"
-    assert saved["quality"]["status"] == "invalid"
-    assert len(saved["runs"]) == 1
+    assert saved["quality"]["status"] == "pending"
+    assert len(saved["runs"]) == 0
+    assert saved["progress"]["excluded_attempts"] == 1
+    assert saved["attempts"][0]["status"] == "rejected"
 
 
 def test_quality_gate_rejects_fallback_heavy_results() -> None:

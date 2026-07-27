@@ -29,6 +29,21 @@ uv run --env-file .env showdown-mind evaluate \
   --run
 ```
 
+Each battle is an independent checkpoint. If balance or the network fails,
+replenish the account and repeat the exact evaluation command with `--resume`:
+
+```bash
+uv run --env-file .env showdown-mind evaluate \
+  --name direct-v0 \
+  --output-dir .runtime/evaluations/direct-v0 \
+  --run \
+  --resume
+```
+
+Accepted battles are skipped. Interrupted attempts remain visible, while the
+unfinished battle receives a new attempt suffix. Resume rejects changes to the
+plan, model, Git commit, or dirty-worktree state.
+
 ## 2. Change one capability
 
 Implement one meaningful change, such as an `estimate_damage` tool. Keep the

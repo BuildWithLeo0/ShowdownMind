@@ -318,6 +318,26 @@ opponent, but is not informative enough for the default research comparison.
 For a cheap pipeline check, add `--battles-per-opponent 1`. A real comparison
 should contain at least 20 battles per version.
 
+Each battle is an independent checkpoint. If balance, network, or the process
+fails after some battles, replenish the account and repeat the exact command
+with `--resume`:
+
+```bash
+uv run --env-file .env showdown-mind evaluate \
+  --name controlled-agent-v2 \
+  --output-dir .runtime/evaluations/controlled-agent-v2 \
+  --policy-mode controlled-agent \
+  --run \
+  --resume
+```
+
+Accepted battles are never rerun. Failed attempts remain under `runs/` and a
+retry gets the next `a01`, `a02`, and so on suffix. Resume requires the same
+evaluation plan, model ID, Git commit, and clean/dirty state, preventing
+different Agent versions from being mixed. `report.json` is updated after
+every accepted battle and reports remaining battles plus token usage from
+excluded attempts.
+
 The evaluation directory contains every underlying run plus `report.json` and
 `report.md`. Reports aggregate win/score rates and Wilson intervals by
 opponent, retries, fallbacks, decision errors, tool-call and rationale
@@ -332,7 +352,7 @@ fallback rate ≤5%, decision-error rate ≤10%, and tool-call/rationale coverag
 require ≥95% plan/prediction coverage, ≤10% final Planner-failure rate, and
 ≤5% enrichment-error rate. Recovered Planner retries remain visible as a
 separate rate but do not invalidate an otherwise successful plan. A severe
-per-run quality failure stops the remaining live matrix early to protect API
+checkpoint quality failure stops the remaining live matrix early to protect API
 cost while preserving an incomplete diagnostic report.
 
 Compare a completed candidate against a completed baseline:
