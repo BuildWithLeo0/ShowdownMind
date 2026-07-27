@@ -274,6 +274,10 @@ def _viewer_decision(record: dict[str, Any], index: int) -> dict[str, Any]:
             redact_secrets(str(error))
             for error in record.get("enrichment_errors") or []
         ],
+        "decision_normalizations": [
+            str(value)
+            for value in record.get("decision_normalizations") or []
+        ],
         "planner": {
             "model_calls": int(record.get("planner_model_calls", 0)),
             "elapsed_seconds": float(

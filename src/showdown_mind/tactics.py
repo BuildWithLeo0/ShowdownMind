@@ -11,6 +11,8 @@ from showdown_mind.actions import ActionCatalog
 
 TACTICAL_ANALYSIS_SCHEMA = "tactical-analysis-v2.1"
 TACTICAL_MODEL_VIEW = "model-compact-v1"
+TACTICAL_ACTION_VIEW = "action-decision-v2"
+TACTICAL_PLANNER_VIEW = "strategic-summary-v1"
 
 ENTRY_HAZARDS = {
     "ceaselessedge",
@@ -542,6 +544,141 @@ def compact_tactical_analysis_for_model(
             for action in analysis.get("actions", [])
         ],
     }
+    return compact
+
+
+def action_tactical_analysis_for_model(
+    analysis: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the narrow per-turn view used by the final action model."""
+    return {
+        "schema": analysis.get("schema"),
+        "view": TACTICAL_ACTION_VIEW,
+        "speed_relation": analysis.get("speed_relation"),
+        "best_damage_action_ids": analysis.get("best_damage_action_ids", []),
+        "best_ko_action_ids": analysis.get("best_ko_action_ids", []),
+        "best_ko_probability": analysis.get("best_ko_probability"),
+        "safest_action_ids": analysis.get("safest_action_ids", []),
+        "lowest_counter_ko_probability": analysis.get(
+            "lowest_counter_ko_probability"
+        ),
+        "best_switch_action_ids": analysis.get("best_switch_action_ids", []),
+        "opponent_move_information": {
+            "public_candidate_move_ids": analysis.get(
+                "opponent_candidate_move_ids",
+                [],
+            ),
+            "candidate_moves_are_hypotheses": bool(
+                analysis.get("opponent_candidate_move_ids")
+            ),
+        },
+        "actions": [
+            _action_decision_tactical_action(action)
+            for action in analysis.get("actions", [])
+        ],
+    }
+
+
+def strategic_tactical_analysis_for_model(
+    analysis: dict[str, Any],
+) -> dict[str, Any]:
+    """Expose matchup signals to the Planner without per-action calculations."""
+    return {
+        "schema": analysis.get("schema"),
+        "view": TACTICAL_PLANNER_VIEW,
+        "purpose": "multi-turn planning; not a current-action recommendation",
+        "speed_relation": analysis.get("speed_relation"),
+        "best_damage_action_ids": analysis.get("best_damage_action_ids", []),
+        "best_ko_action_ids": analysis.get("best_ko_action_ids", []),
+        "best_ko_probability": analysis.get("best_ko_probability"),
+        "safest_action_ids": analysis.get("safest_action_ids", []),
+        "lowest_counter_ko_probability": analysis.get(
+            "lowest_counter_ko_probability"
+        ),
+        "best_switch_action_ids": analysis.get("best_switch_action_ids", []),
+        "opponent_move_information": {
+            "public_candidate_move_ids": analysis.get(
+                "opponent_candidate_move_ids",
+                [],
+            ),
+            "candidate_moves_are_hypotheses": bool(
+                analysis.get("opponent_candidate_move_ids")
+            ),
+        },
+    }
+
+
+def _action_decision_tactical_action(
+    action: dict[str, Any],
+) -> dict[str, Any]:
+    compact: dict[str, Any] = {
+        "action_id": action.get("action_id"),
+        "kind": action.get("kind"),
+    }
+    if action.get("kind") == "move":
+        _copy_present(
+            compact,
+            action,
+            (
+                "move_id",
+                "type_multiplier",
+                "estimated_damage_fraction_range",
+                "estimated_ko_probability",
+                "relative_damage",
+                "move_order",
+                "role_tags",
+            ),
+        )
+        if _number(action.get("stab_multiplier")) > 1:
+            compact["stab_multiplier"] = action["stab_multiplier"]
+        if action.get("terastallize"):
+            compact["terastallize"] = True
+        self_hp_effect = action.get("self_hp_effect") or {}
+        if self_hp_effect.get("self_ko_risk"):
+            compact["self_ko_risk"] = True
+        defensive_tera = action.get("defensive_tera") or {}
+        if defensive_tera.get("verdict"):
+            compact["defensive_tera_verdict"] = defensive_tera["verdict"]
+    elif action.get("kind") == "switch":
+        _copy_present(
+            compact,
+            action,
+            (
+                "species",
+                "offensive_type_multiplier",
+                "defensive_weakness_multiplier",
+                "speed_relation",
+                "matchup_score",
+            ),
+        )
+        entry_hazards = action.get("entry_hazards") or {}
+        if entry_hazards.get("damage_fraction") or entry_hazards.get("effects"):
+            compact["entry_hazards"] = {}
+            _copy_present(
+                compact["entry_hazards"],
+                entry_hazards,
+                ("damage_fraction", "post_entry_hp_fraction", "effects"),
+            )
+    else:
+        _copy_present(compact, action, ("note",))
+
+    counterplay = action.get("counterplay") or {}
+    if counterplay:
+        compact["counterplay"] = {
+            key: counterplay[key]
+            for key in (
+                "risk",
+                "worst_move_id",
+                "estimated_counter_ko_probability",
+                "player_acts_before_reply",
+                "protect_success_probability",
+                "unscored_move_ids",
+            )
+            if key in counterplay
+            and counterplay[key] not in (None, [], {})
+        }
+        if counterplay.get("available") is False:
+            compact["counterplay"]["available"] = False
     return compact
 
 

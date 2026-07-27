@@ -232,6 +232,13 @@ const badgeMarkup = (decision) => {
   if (decision.attempts > 1) {
     badges.push(`<span class="badge">${decision.attempts} ATTEMPTS</span>`);
   }
+  if (decision.decision_normalizations?.length) {
+    badges.push(
+      `<span class="badge" title="${escapeHtml(
+        decision.decision_normalizations.join(", ")
+      )}">NORMALIZED</span>`
+    );
+  }
   if (decision.tool.call_ids.length) {
     badges.push('<span class="badge">NATIVE TOOL CALL</span>');
   }

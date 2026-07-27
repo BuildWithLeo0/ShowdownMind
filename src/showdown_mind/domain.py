@@ -120,6 +120,7 @@ class PolicyResult:
     planner_errors: tuple[str, ...] = ()
     planner_elapsed_seconds: float = 0.0
     enrichment_errors: tuple[str, ...] = ()
+    decision_normalizations: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -166,6 +167,7 @@ class DecisionRecord:
     planner_errors: tuple[str, ...] = ()
     planner_elapsed_seconds: float = 0.0
     enrichment_errors: tuple[str, ...] = ()
+    decision_normalizations: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

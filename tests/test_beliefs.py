@@ -159,3 +159,35 @@ def test_model_view_prioritizes_active_subject_and_caps_repeated_evidence() -> N
         "event-2",
         "event-3",
     ]
+
+
+def test_model_view_can_limit_action_context_to_active_opponent() -> None:
+    belief = BeliefState(
+        battle_id="battle-test",
+        updated_turn=3,
+        hypotheses=(
+            BeliefHypothesis(
+                subject="opponent:active",
+                kind="possible_move",
+                value="earthquake",
+                confidence="likely",
+                evidence_ids=("prior",),
+            ),
+            BeliefHypothesis(
+                subject="opponent:bench",
+                kind="possible_move",
+                value="surf",
+                confidence="likely",
+                evidence_ids=("prior",),
+            ),
+        ),
+    )
+
+    view = belief.model_view(
+        active_subject="opponent:active",
+        active_only=True,
+    )
+
+    assert [item["subject"] for item in view["hypotheses"]] == [
+        "opponent:active"
+    ]

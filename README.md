@@ -129,15 +129,18 @@ The model must call:
 choose_battle_action(
   action_id,
   confidence,
+  opponent_prediction,
+  request_replan,
   reason_codes,
   short_rationale
 )
 ```
 
 `action_id` is restricted to the current legal-action enum. The rationale is a
-required public sentence capped at 240 characters, not private chain-of-thought.
-The program validates every argument again before resolving the ID into a real
-`poke-env` battle order.
+required public sentence, not private chain-of-thought. Controlled-Agent limits
+it to 160 characters and the prediction detail to 60 characters. The program
+validates every argument again before resolving the ID into a real `poke-env`
+battle order.
 
 ### Run the controlled Agent
 
@@ -184,6 +187,14 @@ makes one Planner call followed by one action call. If the Planner fails, the
 Agent keeps the previous plan or installs a neutral plan and still chooses a
 legal action. Memory lasts for one battle only; there is no vector database,
 cross-battle memory, open-ended ReAct loop, or web search.
+
+The action model and Planner receive different bounded views. The action model
+gets the active opponent's hypotheses, four recent events, and per-action
+tactical estimates. The Planner gets the broader one-battle evidence and a
+strategic tactical summary without repeated per-action damage details. If a
+provider returns more than three known reason codes, the controller keeps the
+first three and records that normalization; unknown codes and malformed JSON
+still require the single repair attempt.
 
 ### Use the tactical calculator tool
 
@@ -312,7 +323,8 @@ The evaluation directory contains every underlying run plus `report.json` and
 opponent, retries, fallbacks, decision errors, tool-call and rationale
 coverage, confidence, tokens, and model latency. Controlled-Agent reports also
 include plan coverage, replan frequency, Planner cost and errors, enrichment
-errors, and opponent-prediction coverage and accuracy.
+errors, opponent-prediction coverage and accuracy, protocol normalizations,
+action-context size, and action versus Planner token cost.
 
 Research validity is stricter than merely finishing battles. Reports require
 fallback rate ≤5%, decision-error rate ≤10%, and tool-call/rationale coverage

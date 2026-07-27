@@ -115,6 +115,7 @@ def action_json(
     *,
     prediction_kind: str = "attack",
     request_replan: bool = False,
+    reason_codes: list[str] | None = None,
 ) -> str:
     return json.dumps(
         {
@@ -126,7 +127,7 @@ def action_json(
                 "confidence": 0.6,
             },
             "request_replan": request_replan,
-            "reason_codes": ["DAMAGE", "PLAN_ALIGNMENT"],
+            "reason_codes": reason_codes or ["DAMAGE", "PLAN_ALIGNMENT"],
             "short_rationale": "Pressure the visible target with strong damage.",
         }
     )
@@ -164,6 +165,11 @@ async def test_first_controlled_turn_plans_then_selects_one_action() -> None:
     assert result.decision.opponent_prediction["kind"] == "attack"
     assert result.tool_executions[0]["execution_kind"] == "internal"
     assert result.memory["recent_events"]
+    assert result.policy_input["schema"] == "controlled-agent-v2"
+    assert result.policy_input["memory"]["schema"] == (
+        "battle-memory-decision-v1"
+    )
+    assert result.policy_input["tactical"]["view"] == "action-decision-v2"
 
 
 @pytest.mark.asyncio
@@ -243,6 +249,40 @@ async def test_enrichment_failure_is_recorded_but_does_not_block_action() -> Non
     assert result.enrichment_errors == (
         "tactical_advisor:RuntimeError: calculator unavailable",
     )
+
+
+@pytest.mark.asyncio
+async def test_known_reason_code_overflow_is_normalized_without_retry() -> None:
+    client = ScriptedModelClient(
+        [
+            plan_json(),
+            action_json(
+                reason_codes=[
+                    "DAMAGE",
+                    "STAB",
+                    "TYPE_MATCHUP",
+                    "SURVIVAL",
+                ]
+            ),
+        ]
+    )
+
+    result = await ControlledAgentPolicy(client).decide(
+        snapshot(),
+        catalog(),
+        battle=battle([["", "turn", "1"]]),
+    )
+
+    assert result.attempts == 1
+    assert result.decision.reason_codes == (
+        "DAMAGE",
+        "STAB",
+        "TYPE_MATCHUP",
+    )
+    assert result.decision_normalizations == (
+        "reason_codes_truncated:4->3",
+    )
+    assert result.errors == ()
 
 
 def test_plan_reacts_only_to_faints_that_invalidate_it() -> None:

@@ -43,7 +43,6 @@ from showdown_mind.planning import (
     neutral_plan,
 )
 from showdown_mind.policy import (
-    MAX_RATIONALE_CHARACTERS,
     REASON_CODE_ALIASES,
     REASON_CODES,
     PolicyFailure,
@@ -52,17 +51,23 @@ from showdown_mind.policy import (
 from showdown_mind.policy_input import CompiledPolicyInput, compile_policy_input
 from showdown_mind.tactics import (
     TacticalAdvisor,
-    compact_tactical_analysis_for_model,
+    action_tactical_analysis_for_model,
+    strategic_tactical_analysis_for_model,
 )
 
 
-CONTROLLED_INPUT_SCHEMA = "controlled-agent-v1"
+CONTROLLED_INPUT_SCHEMA = "controlled-agent-v2"
 MAX_CONTEXT_CHARACTERS = 24_000
+CONTROLLED_MAX_RATIONALE_CHARACTERS = 160
+CONTROLLED_MAX_PREDICTION_CHARACTERS = 60
 CONTROLLED_SYSTEM_PROMPT = """You choose one legal action in a Pokémon Showdown battle.
 Use only the player-visible state, memory, hypotheses, plan, and estimates provided.
 Hypotheses are uncertain and must not be treated as hidden facts.
 Follow the battle plan when useful, but prioritize a legal action now.
-Call choose_battle_action exactly once. Give one concise public rationale, not chain-of-thought."""
+Call choose_battle_action exactly once with valid JSON arguments.
+Quote every string. Use at most three reason_codes.
+Keep the prediction detail brief. The rationale must be one short public
+sentence, not chain-of-thought."""
 
 
 @dataclass
@@ -142,8 +147,13 @@ class ControlledAgentPolicy(SingleCallPolicy):
             f"opponent:{to_id_str(str(snapshot.opponent_side.get('active') or ''))}"
         )
         candidate_moves = current_belief.possible_move_ids(active_subject)
-        belief_view = current_belief.model_view(
+        planner_belief_view = current_belief.model_view(
             active_subject=active_subject,
+        )
+        action_belief_view = current_belief.model_view(
+            active_subject=active_subject,
+            max_hypotheses=8,
+            active_only=True,
         )
         try:
             tactical_analysis = self._tactical_advisor.analyze(
@@ -157,7 +167,12 @@ class ControlledAgentPolicy(SingleCallPolicy):
                 catalog,
                 error_type=type(exc).__name__,
             )
-        tactical_view = compact_tactical_analysis_for_model(tactical_analysis)
+        action_tactical_view = action_tactical_analysis_for_model(
+            tactical_analysis
+        )
+        planner_tactical_view = strategic_tactical_analysis_for_model(
+            tactical_analysis
+        )
         battle_input = compile_policy_input(snapshot, self._input_format)
         event_values = tuple(event.to_dict() for event in new_events)
         trigger = _plan_trigger(state, new_events=event_values, changes=changes)
@@ -175,8 +190,8 @@ class ControlledAgentPolicy(SingleCallPolicy):
                     context={
                         "battle": battle_input.payload,
                         "memory": state.memory.model_view(),
-                        "beliefs": belief_view,
-                        "tactical": tactical_view,
+                        "beliefs": planner_belief_view,
+                        "tactical": planner_tactical_view,
                         "trigger": trigger,
                     },
                     previous=state.plan,
@@ -205,10 +220,10 @@ class ControlledAgentPolicy(SingleCallPolicy):
             policy_input = _compile_controlled_input(
                 battle=battle_input.payload,
                 battle_input_format=battle_input.format_name,
-                memory=state.memory.model_view(),
-                beliefs=belief_view,
+                memory=state.memory.decision_view(),
+                beliefs=action_belief_view,
                 plan=state.plan.to_dict(),
-                tactical=tactical_view,
+                tactical=action_tactical_view,
             )
         except ValueError as exc:
             if self._input_format == "compact":
@@ -218,10 +233,10 @@ class ControlledAgentPolicy(SingleCallPolicy):
             policy_input = _compile_controlled_input(
                 battle=battle_input.payload,
                 battle_input_format=battle_input.format_name,
-                memory=state.memory.model_view(),
-                beliefs=belief_view,
+                memory=state.memory.decision_view(),
+                beliefs=action_belief_view,
                 plan=state.plan.to_dict(),
-                tactical=tactical_view,
+                tactical=action_tactical_view,
             )
         tool_executions = (
             {
@@ -244,6 +259,7 @@ class ControlledAgentPolicy(SingleCallPolicy):
         action_errors: list[str] = []
         action_calls = 0
         for attempt in range(self._max_repairs + 1):
+            decision_normalizations: list[str] = []
             action_calls += 1
             try:
                 response = await asyncio.wait_for(
@@ -251,7 +267,11 @@ class ControlledAgentPolicy(SingleCallPolicy):
                     timeout=self._timeout_seconds,
                 )
                 trace.add_response(response, ACTION_TOOL_NAME)
-                decision = _parse_controlled_decision(response.content, catalog)
+                decision = _parse_controlled_decision(
+                    response.content,
+                    catalog,
+                    normalizations=decision_normalizations,
+                )
             except (TimeoutError, ModelCallError) as exc:
                 action_errors.append(f"{type(exc).__name__}: {exc}")
                 if attempt >= self._max_repairs:
@@ -351,6 +371,7 @@ class ControlledAgentPolicy(SingleCallPolicy):
                 planner_errors=tuple(planner_errors),
                 planner_elapsed_seconds=planner_elapsed,
                 enrichment_errors=tuple(enrichment_errors),
+                decision_normalizations=tuple(decision_normalizations),
             )
         raise AssertionError("unreachable")
 
@@ -598,7 +619,10 @@ def _controlled_action_tool(catalog: ActionCatalog) -> ModelTool:
                             "type": "string",
                             "enum": list(PREDICTION_KINDS),
                         },
-                        "detail": {"type": "string", "maxLength": 80},
+                        "detail": {
+                            "type": "string",
+                            "maxLength": CONTROLLED_MAX_PREDICTION_CHARACTERS,
+                        },
                         "confidence": {
                             "type": "number",
                             "minimum": 0,
@@ -618,7 +642,7 @@ def _controlled_action_tool(catalog: ActionCatalog) -> ModelTool:
                 "short_rationale": {
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": MAX_RATIONALE_CHARACTERS,
+                    "maxLength": CONTROLLED_MAX_RATIONALE_CHARACTERS,
                 },
             },
             "required": [
@@ -637,6 +661,8 @@ def _controlled_action_tool(catalog: ActionCatalog) -> ModelTool:
 def _parse_controlled_decision(
     content: str,
     catalog: ActionCatalog,
+    *,
+    normalizations: list[str] | None = None,
 ) -> PolicyDecision:
     value = json.loads(content)
     if not isinstance(value, dict):
@@ -685,11 +711,17 @@ def _parse_controlled_decision(
     normalized = tuple(
         dict.fromkeys(REASON_CODE_ALIASES.get(code, code) for code in reason_codes)
     )
-    if not 1 <= len(normalized) <= 3:
-        raise ValueError("reason_codes must contain between 1 and 3 values")
+    if not normalized:
+        raise ValueError("reason_codes must contain at least one value")
     invalid = sorted(set(normalized).difference(REASON_CODES))
     if invalid:
         raise ValueError(f"unknown reason_codes: {', '.join(invalid)}")
+    if len(normalized) > 3:
+        if normalizations is not None:
+            normalizations.append(
+                f"reason_codes_truncated:{len(normalized)}->3"
+            )
+        normalized = normalized[:3]
     rationale = value["short_rationale"]
     if not isinstance(rationale, str) or not rationale.strip():
         raise ValueError("short_rationale must be a non-empty string")
@@ -697,10 +729,12 @@ def _parse_controlled_decision(
         action_id=action_id,
         confidence=confidence,
         reason_codes=normalized,
-        short_rationale=rationale.strip()[:MAX_RATIONALE_CHARACTERS].rstrip(),
+        short_rationale=(
+            rationale.strip()[:CONTROLLED_MAX_RATIONALE_CHARACTERS].rstrip()
+        ),
         opponent_prediction={
             "kind": kind,
-            "detail": detail.strip()[:80],
+            "detail": detail.strip()[:CONTROLLED_MAX_PREDICTION_CHARACTERS],
             "confidence": prediction_confidence,
         },
         request_replan=request_replan,
@@ -727,7 +761,9 @@ def _repair_action_request(
                     for action in battle.get("legal_actions", [])
                 ],
                 "instruction": (
-                    f"Call {ACTION_TOOL_NAME} once with corrected arguments."
+                    f"Call {ACTION_TOOL_NAME} once with corrected valid JSON "
+                    "arguments. Quote every string and use at most three "
+                    "reason_codes."
                 ),
             },
             ensure_ascii=False,

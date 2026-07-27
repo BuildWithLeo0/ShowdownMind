@@ -7,10 +7,14 @@ from poke_env.player.battle_order import SingleBattleOrder
 from showdown_mind.actions import ActionCatalog, CatalogEntry
 from showdown_mind.domain import LegalAction
 from showdown_mind.tactics import (
+    TACTICAL_ACTION_VIEW,
     TACTICAL_ANALYSIS_SCHEMA,
     TACTICAL_MODEL_VIEW,
+    TACTICAL_PLANNER_VIEW,
     TacticalAdvisor,
+    action_tactical_analysis_for_model,
     compact_tactical_analysis_for_model,
+    strategic_tactical_analysis_for_model,
 )
 
 
@@ -326,3 +330,30 @@ def test_model_view_is_smaller_but_keeps_decision_facts() -> None:
     assert "attack_stat_estimate" not in action
     assert "raw_incoming_ko_probability" not in action["counterplay"]
     assert len(json.dumps(compact)) < len(json.dumps(full)) * 0.7
+
+
+def test_controlled_agent_uses_separate_action_and_planner_views() -> None:
+    active = healthy_pokemon("Pikachu")
+    opponent = healthy_pokemon("Gyarados")
+    opponent.moved("earthquake")
+    full = TacticalAdvisor().analyze(
+        SimpleNamespace(
+            active_pokemon=active,
+            opponent_active_pokemon=opponent,
+        ),
+        ActionCatalog(
+            (
+                move_entry("thunderbolt"),
+                move_entry("protect"),
+            )
+        ),
+    )
+
+    action = action_tactical_analysis_for_model(full)
+    planner = strategic_tactical_analysis_for_model(full)
+
+    assert action["view"] == TACTICAL_ACTION_VIEW
+    assert planner["view"] == TACTICAL_PLANNER_VIEW
+    assert action["actions"][0]["counterplay"]["worst_move_id"] == "earthquake"
+    assert "actions" not in planner
+    assert len(json.dumps(planner)) < len(json.dumps(action))

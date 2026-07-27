@@ -85,6 +85,7 @@ class ResearchPlayer(Player):
         planner_errors: tuple[str, ...] = ()
         planner_elapsed_seconds = 0.0
         enrichment_errors: tuple[str, ...] = ()
+        decision_normalizations: tuple[str, ...] = ()
 
         try:
             result = await self._policy.decide(
@@ -127,6 +128,7 @@ class ResearchPlayer(Player):
             planner_errors = result.planner_errors
             planner_elapsed_seconds = result.planner_elapsed_seconds
             enrichment_errors = result.enrichment_errors
+            decision_normalizations = result.decision_normalizations
         except PolicyFailure as exc:
             fallback_used = True
             errors = exc.errors
@@ -210,6 +212,7 @@ class ResearchPlayer(Player):
             planner_errors=planner_errors,
             planner_elapsed_seconds=planner_elapsed_seconds,
             enrichment_errors=enrichment_errors,
+            decision_normalizations=decision_normalizations,
         )
         self.decision_records.append(record)
         if self._decision_sink is not None:

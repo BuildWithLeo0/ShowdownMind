@@ -300,6 +300,10 @@ def summarize_decision_log(path: Path) -> dict[str, Any]:
     prediction_decisions = 0
     prediction_resolutions: dict[tuple[Any, ...], bool] = {}
     reason_counts: Counter[str] = Counter()
+    normalized_decisions = 0
+    decision_normalizations = 0
+    policy_input_characters = 0
+    max_policy_input_characters = 0
 
     for record in records:
         expected_calls = int(record.get("expected_model_calls", 1))
@@ -377,6 +381,18 @@ def summarize_decision_log(path: Path) -> dict[str, Any]:
                 resolution.get("matched")
             )
         reason_counts.update(str(code) for code in record.get("reason_codes") or [])
+        normalizations = [
+            str(value)
+            for value in record.get("decision_normalizations") or []
+        ]
+        normalized_decisions += bool(normalizations)
+        decision_normalizations += len(normalizations)
+        characters = int(record.get("policy_input_characters", 0))
+        policy_input_characters += characters
+        max_policy_input_characters = max(
+            max_policy_input_characters,
+            characters,
+        )
 
     return {
         "decisions": decisions,
@@ -400,6 +416,10 @@ def summarize_decision_log(path: Path) -> dict[str, Any]:
         "planner_total_tokens": planner_total_tokens,
         "planner_latency_seconds": round(planner_latency, 6),
         "enrichment_error_decisions": enrichment_error_decisions,
+        "normalized_decisions": normalized_decisions,
+        "decision_normalizations": decision_normalizations,
+        "policy_input_characters": policy_input_characters,
+        "max_policy_input_characters": max_policy_input_characters,
         "prediction_decisions": prediction_decisions,
         "prediction_resolutions": len(prediction_resolutions),
         "prediction_matches": sum(prediction_resolutions.values()),
@@ -493,6 +513,9 @@ def aggregate_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
             "planner_output_tokens",
             "planner_total_tokens",
             "enrichment_error_decisions",
+            "normalized_decisions",
+            "decision_normalizations",
+            "policy_input_characters",
             "prediction_decisions",
             "prediction_resolutions",
             "prediction_matches",
@@ -511,6 +534,25 @@ def aggregate_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
         for run in runs
     )
     wall_seconds = sum(float(run["result"].get("elapsed_seconds", 0.0)) for run in runs)
+    max_policy_input_characters = max(
+        (
+            int(run["decision_metrics"].get("max_policy_input_characters", 0))
+            for run in runs
+        ),
+        default=0,
+    )
+    action_input_tokens = max(
+        0,
+        totals["input_tokens"] - totals["planner_input_tokens"],
+    )
+    action_output_tokens = max(
+        0,
+        totals["output_tokens"] - totals["planner_output_tokens"],
+    )
+    action_total_tokens = max(
+        0,
+        totals["total_tokens"] - totals["planner_total_tokens"],
+    )
     score_rate = _rate(wins + 0.5 * draws, battles)
     return {
         "battles": battles,
@@ -561,9 +603,32 @@ def aggregate_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
             totals["enrichment_error_decisions"],
             decisions,
         ),
+        "normalized_decisions": totals["normalized_decisions"],
+        "normalization_rate": _rate(
+            totals["normalized_decisions"],
+            decisions,
+        ),
+        "decision_normalizations": totals["decision_normalizations"],
+        "policy_input_characters": totals["policy_input_characters"],
+        "average_policy_input_characters": _rate(
+            totals["policy_input_characters"],
+            decisions,
+        ),
+        "max_policy_input_characters": max_policy_input_characters,
         "planner_input_tokens": totals["planner_input_tokens"],
         "planner_output_tokens": totals["planner_output_tokens"],
         "planner_total_tokens": totals["planner_total_tokens"],
+        "average_planner_tokens_per_replan": _rate(
+            totals["planner_total_tokens"],
+            totals["replan_decisions"],
+        ),
+        "action_input_tokens": action_input_tokens,
+        "action_output_tokens": action_output_tokens,
+        "action_total_tokens": action_total_tokens,
+        "average_action_tokens_per_decision": _rate(
+            action_total_tokens,
+            decisions,
+        ),
         "prediction_coverage": _rate(
             totals["prediction_decisions"],
             decisions,
@@ -777,6 +842,8 @@ def build_comparison(
         "rationale_coverage",
         "average_tokens_per_battle",
         "average_tokens_per_decision",
+        "average_action_tokens_per_decision",
+        "average_policy_input_characters",
         "average_decision_latency_seconds",
     )
     deltas = {
@@ -972,6 +1039,10 @@ def render_evaluation_markdown(report: dict[str, Any]) -> str:
                 f"{overall.get('enrichment_error_rate', 0.0):.2%}"
             ),
             (
+                "- Protocol normalization rate: "
+                f"{overall.get('normalization_rate', 0.0):.2%}"
+            ),
+            (
                 "- Opponent-prediction accuracy: "
                 f"{overall.get('prediction_accuracy', 0.0):.2%} "
                 f"({overall.get('prediction_resolutions', 0)} resolved)"
@@ -982,6 +1053,18 @@ def render_evaluation_markdown(report: dict[str, Any]) -> str:
             ),
             f"- Rationale coverage: {overall['rationale_coverage']:.2%}",
             f"- Average tokens / battle: {overall['average_tokens_per_battle']:.1f}",
+            (
+                "- Average action tokens / decision: "
+                f"{overall.get('average_action_tokens_per_decision', 0.0):.1f}"
+            ),
+            (
+                "- Average action-context characters: "
+                f"{overall.get('average_policy_input_characters', 0.0):.1f}"
+            ),
+            (
+                "- Average Planner tokens / replan: "
+                f"{overall.get('average_planner_tokens_per_replan', 0.0):.1f}"
+            ),
             (
                 "- Total tokens including preflight: "
                 f"{report['cost_accounting']['evaluation_total_tokens']}"

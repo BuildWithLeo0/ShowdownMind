@@ -154,6 +154,33 @@ class BattleMemory:
             }
         )
 
+    def decision_view(self) -> dict[str, Any]:
+        """Return only the evidence needed to choose the current action."""
+        important_events = [
+            _model_event(event)
+            for event in self.events
+            if event.kind != "unknown_public_event"
+        ][-4:]
+        return _prune(
+            {
+                "schema": "battle-memory-decision-v1",
+                "revealed_moves": _sorted_mapping(self.revealed_moves),
+                "item_history": self.item_history,
+                "ability_history": self.ability_history,
+                "fainted": sorted(self.fainted),
+                "tera_history": self.tera_history[-2:],
+                "speed_evidence": self.speed_evidence[-2:],
+                "damage_evidence": self.damage_evidence[-2:],
+                "opponent_behavior_counts": self.opponent_action_counts,
+                "recent_events": important_events,
+                "previous_prediction_resolution": (
+                    self.latest_prediction_resolution.to_dict()
+                    if self.latest_prediction_resolution is not None
+                    else None
+                ),
+            }
+        )
+
     def _reduce(self, event: BattleEvent) -> None:
         if event.kind == "turn_started":
             self.current_turn = event.turn

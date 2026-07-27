@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from showdown_mind.battle_memory import (
@@ -142,3 +143,25 @@ def test_model_memory_excludes_unknown_protocol_noise() -> None:
     recent = memory.model_view()["recent_events"]
     assert all(event["kind"] != "unknown_public_event" for event in recent)
     assert any(event["kind"] == "switch" for event in recent)
+
+
+def test_decision_memory_view_is_narrower_than_planner_view() -> None:
+    battle = fake_battle(
+        [
+            ["", "turn", "1"],
+            ["", "switch", "p2a: Pikachu", "Pikachu, L80", "100/100"],
+            ["", "move", "p2a: Pikachu", "Thunderbolt", "p1a: Eevee"],
+            ["", "turn", "2"],
+        ]
+    )
+    memory = BattleMemory(battle.battle_tag)
+    events = PokeEnvEventAdapter().consume(battle, memory)
+    memory.consume(events)
+
+    decision = memory.decision_view()
+    planner = memory.model_view()
+
+    assert decision["schema"] == "battle-memory-decision-v1"
+    assert "opponent_behavior_counts" in decision
+    assert "opponent_behavior" not in decision
+    assert len(json.dumps(decision)) <= len(json.dumps(planner))

@@ -139,14 +139,17 @@ def _sanitize_provider_url(value: Any) -> str | None:
 def _policy_architecture(policy_mode: str) -> dict[str, Any]:
     if policy_mode == "controlled-agent":
         return {
-            "kind": "hierarchical-controlled-agent-v1",
-            "decision_context_schema": "controlled-agent-v1",
+            "kind": "hierarchical-controlled-agent-v2",
+            "decision_context_schema": "controlled-agent-v2",
             "battle_memory": "battle-memory-v1",
             "belief_tracker": "rules-plus-public-random-battle-priors-v1",
             "public_prior_source": (
                 "pokemon-showdown:gen9randombattle:sets.json"
             ),
             "tactical_analysis": "automatic-every-turn",
+            "action_context": "active-opponent-and-current-tactics-only",
+            "planner_context": "strategic-summary-without-per-action-details",
+            "output_normalization": "known-reason-code-overflow-only",
             "planner": "event-triggered-battle-plan-v1",
             "model_tools": [
                 "update_battle_plan",

@@ -57,9 +57,16 @@ class BeliefState:
         *,
         active_subject: str | None = None,
         max_hypotheses: int = 16,
+        active_only: bool = False,
     ) -> dict[str, Any]:
         grouped: dict[tuple[str, str], list[BeliefHypothesis]] = {}
         for hypothesis in self.hypotheses:
+            if (
+                active_only
+                and active_subject is not None
+                and hypothesis.subject != active_subject
+            ):
+                continue
             grouped.setdefault(
                 (hypothesis.subject, hypothesis.kind),
                 [],

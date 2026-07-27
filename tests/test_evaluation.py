@@ -33,6 +33,7 @@ def decision_record(
         "confidence": 0.8,
         "reason_codes": ["DAMAGE"],
         "elapsed_seconds": 2.0,
+        "policy_input_characters": 1200,
         "usages": [
             {
                 "input_tokens": 10,
@@ -215,6 +216,7 @@ def test_summarizes_controlled_agent_planning_and_predictions(tmp_path) -> None:
     assert metrics["prediction_resolutions"] == 1
     assert metrics["prediction_matches"] == 1
     assert metrics["tactical_tool_decisions"] == 2
+    assert metrics["policy_input_characters"] == 2400
 
 
 def test_aggregate_runs_includes_outcomes_and_rates() -> None:
@@ -226,6 +228,29 @@ def test_aggregate_runs_includes_outcomes_and_rates() -> None:
     assert metrics["tool_call_coverage"] == 1.0
     assert metrics["average_tokens_per_battle"] == 15.0
     assert wilson_interval(2.5, 4) is not None
+
+
+def test_summarizes_normalization_and_separates_action_cost(tmp_path) -> None:
+    path = tmp_path / "normalized.jsonl"
+    record = {
+        **decision_record(),
+        "decision_normalizations": ["reason_codes_truncated:4->3"],
+        "plan_trigger": "initial",
+        "planner_usages": [
+            {"input_tokens": 4, "output_tokens": 2, "total_tokens": 6}
+        ],
+    }
+    write_decisions(path, [record])
+    run = run_entry("max-base-power", ["win"])
+    run["decision_metrics"] = summarize_decision_log(path)
+
+    metrics = aggregate_runs([run])
+
+    assert metrics["normalization_rate"] == 1.0
+    assert metrics["average_policy_input_characters"] == 1200.0
+    assert metrics["planner_total_tokens"] == 6
+    assert metrics["action_total_tokens"] == 9
+    assert metrics["average_action_tokens_per_decision"] == 9.0
 
 
 @pytest.mark.asyncio
