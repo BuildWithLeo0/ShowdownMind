@@ -83,6 +83,7 @@ class ResearchPlayer(Player):
         planner_model_calls = 0
         planner_usages: tuple[TokenUsage, ...] = ()
         planner_errors: tuple[str, ...] = ()
+        planner_failed = False
         planner_elapsed_seconds = 0.0
         enrichment_errors: tuple[str, ...] = ()
         decision_normalizations: tuple[str, ...] = ()
@@ -126,6 +127,7 @@ class ResearchPlayer(Player):
             planner_model_calls = result.planner_model_calls
             planner_usages = result.planner_usages
             planner_errors = result.planner_errors
+            planner_failed = result.planner_failed
             planner_elapsed_seconds = result.planner_elapsed_seconds
             enrichment_errors = result.enrichment_errors
             decision_normalizations = result.decision_normalizations
@@ -158,6 +160,7 @@ class ResearchPlayer(Player):
             planner_model_calls = exc.planner_model_calls
             planner_usages = exc.planner_usages
             planner_errors = exc.planner_errors
+            planner_failed = exc.planner_failed
             planner_elapsed_seconds = exc.planner_elapsed_seconds
             enrichment_errors = exc.enrichment_errors
             action_id = deterministic_fallback_action_id(
@@ -210,6 +213,7 @@ class ResearchPlayer(Player):
             planner_model_calls=planner_model_calls,
             planner_usages=planner_usages,
             planner_errors=planner_errors,
+            planner_failed=planner_failed,
             planner_elapsed_seconds=planner_elapsed_seconds,
             enrichment_errors=enrichment_errors,
             decision_normalizations=decision_normalizations,

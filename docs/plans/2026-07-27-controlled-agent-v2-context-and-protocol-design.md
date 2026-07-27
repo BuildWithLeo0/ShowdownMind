@@ -54,6 +54,11 @@ Evaluation reports add:
 - average Planner tokens per replan;
 - normalized-decision count and rate.
 
+Planner observability separates recovered retries from final failures. Both are
+logged, but only final failure—where the Planner exhausts its repair allowance
+and the controller must retain or install a fallback plan—participates in the
+quality stop gate.
+
 The first validation run should repeat the same two opponents with one battle
 each. It can test reliability, context reduction, latency, and cost, but its
 win rate is diagnostic only. A strategic improvement claim still requires the

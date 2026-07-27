@@ -30,7 +30,7 @@ FINAL_QUALITY_THRESHOLDS = {
     "min_rationale_coverage": 0.95,
     "min_battle_plan_coverage": 0.95,
     "min_prediction_coverage": 0.95,
-    "max_planner_error_rate": 0.10,
+    "max_planner_failure_rate": 0.10,
     "max_enrichment_error_rate": 0.05,
 }
 HARD_STOP_THRESHOLDS = {
@@ -41,7 +41,7 @@ HARD_STOP_THRESHOLDS = {
     "min_rationale_coverage": 0.70,
     "min_battle_plan_coverage": 0.70,
     "min_prediction_coverage": 0.70,
-    "max_planner_error_rate": 0.30,
+    "max_planner_failure_rate": 0.30,
     "max_enrichment_error_rate": 0.20,
 }
 
@@ -292,6 +292,8 @@ def summarize_decision_log(path: Path) -> dict[str, Any]:
     replan_decisions = 0
     planner_model_calls = 0
     planner_error_decisions = 0
+    planner_failure_decisions = 0
+    planner_recovered_error_decisions = 0
     planner_input_tokens = 0
     planner_output_tokens = 0
     planner_total_tokens = 0
@@ -349,7 +351,13 @@ def summarize_decision_log(path: Path) -> dict[str, Any]:
         battle_plan_decisions += bool(record.get("battle_plan"))
         replan_decisions += bool(str(record.get("plan_trigger") or ""))
         planner_model_calls += int(record.get("planner_model_calls", 0))
-        planner_error_decisions += bool(record.get("planner_errors"))
+        has_planner_errors = bool(record.get("planner_errors"))
+        planner_failed = bool(record.get("planner_failed", False))
+        planner_error_decisions += has_planner_errors
+        planner_failure_decisions += planner_failed
+        planner_recovered_error_decisions += (
+            has_planner_errors and not planner_failed
+        )
         planner_latency += float(record.get("planner_elapsed_seconds", 0.0))
         enrichment_error_decisions += bool(record.get("enrichment_errors"))
         for usage in record.get("planner_usages") or []:
@@ -411,6 +419,10 @@ def summarize_decision_log(path: Path) -> dict[str, Any]:
         "replan_decisions": replan_decisions,
         "planner_model_calls": planner_model_calls,
         "planner_error_decisions": planner_error_decisions,
+        "planner_failure_decisions": planner_failure_decisions,
+        "planner_recovered_error_decisions": (
+            planner_recovered_error_decisions
+        ),
         "planner_input_tokens": planner_input_tokens,
         "planner_output_tokens": planner_output_tokens,
         "planner_total_tokens": planner_total_tokens,
@@ -509,6 +521,8 @@ def aggregate_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
             "replan_decisions",
             "planner_model_calls",
             "planner_error_decisions",
+            "planner_failure_decisions",
+            "planner_recovered_error_decisions",
             "planner_input_tokens",
             "planner_output_tokens",
             "planner_total_tokens",
@@ -596,6 +610,18 @@ def aggregate_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
         "planner_error_decisions": totals["planner_error_decisions"],
         "planner_error_rate": _rate(
             totals["planner_error_decisions"],
+            totals["replan_decisions"],
+        ),
+        "planner_failure_decisions": totals["planner_failure_decisions"],
+        "planner_failure_rate": _rate(
+            totals["planner_failure_decisions"],
+            totals["replan_decisions"],
+        ),
+        "planner_recovered_error_decisions": totals[
+            "planner_recovered_error_decisions"
+        ],
+        "planner_recovered_error_rate": _rate(
+            totals["planner_recovered_error_decisions"],
             totals["replan_decisions"],
         ),
         "enrichment_error_decisions": totals["enrichment_error_decisions"],
@@ -729,10 +755,10 @@ def assess_quality(
                 thresholds["min_prediction_coverage"],
             ),
             (
-                "planner_error_rate",
-                float(metrics.get("planner_error_rate", 0.0)),
+                "planner_failure_rate",
+                float(metrics.get("planner_failure_rate", 0.0)),
                 "<=",
-                thresholds["max_planner_error_rate"],
+                thresholds["max_planner_failure_rate"],
             ),
             (
                 "enrichment_error_rate",
@@ -1037,6 +1063,14 @@ def render_evaluation_markdown(report: dict[str, Any]) -> str:
             (
                 "- Enrichment error rate: "
                 f"{overall.get('enrichment_error_rate', 0.0):.2%}"
+            ),
+            (
+                "- Planner recovered-error rate: "
+                f"{overall.get('planner_recovered_error_rate', 0.0):.2%}"
+            ),
+            (
+                "- Planner final-failure rate: "
+                f"{overall.get('planner_failure_rate', 0.0):.2%}"
             ),
             (
                 "- Protocol normalization rate: "

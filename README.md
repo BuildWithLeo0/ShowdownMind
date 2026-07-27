@@ -329,10 +329,11 @@ action-context size, and action versus Planner token cost.
 Research validity is stricter than merely finishing battles. Reports require
 fallback rate ≤5%, decision-error rate ≤10%, and tool-call/rationale coverage
 ≥95% before `compare` accepts them. Controlled-Agent reports additionally
-require ≥95% plan/prediction coverage, ≤10% Planner-error rate, and ≤5%
-enrichment-error rate. A severe per-run quality failure stops the remaining
-live matrix early to protect API cost while preserving an incomplete diagnostic
-report.
+require ≥95% plan/prediction coverage, ≤10% final Planner-failure rate, and
+≤5% enrichment-error rate. Recovered Planner retries remain visible as a
+separate rate but do not invalidate an otherwise successful plan. A severe
+per-run quality failure stops the remaining live matrix early to protect API
+cost while preserving an incomplete diagnostic report.
 
 Compare a completed candidate against a completed baseline:
 

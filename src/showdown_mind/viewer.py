@@ -280,6 +280,7 @@ def _viewer_decision(record: dict[str, Any], index: int) -> dict[str, Any]:
         ],
         "planner": {
             "model_calls": int(record.get("planner_model_calls", 0)),
+            "failed": bool(record.get("planner_failed", False)),
             "elapsed_seconds": float(
                 record.get("planner_elapsed_seconds", 0.0)
             ),

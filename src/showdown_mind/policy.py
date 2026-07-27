@@ -107,6 +107,7 @@ class PolicyFailure(RuntimeError):
         planner_model_calls: int = 0,
         planner_usages: tuple[TokenUsage, ...] = (),
         planner_errors: tuple[str, ...] = (),
+        planner_failed: bool = False,
         planner_elapsed_seconds: float = 0.0,
         enrichment_errors: tuple[str, ...] = (),
     ):
@@ -135,6 +136,7 @@ class PolicyFailure(RuntimeError):
         self.planner_model_calls = planner_model_calls
         self.planner_usages = planner_usages
         self.planner_errors = planner_errors
+        self.planner_failed = planner_failed
         self.planner_elapsed_seconds = planner_elapsed_seconds
         self.enrichment_errors = enrichment_errors
 

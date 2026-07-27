@@ -182,6 +182,7 @@ class ControlledAgentPolicy(SingleCallPolicy):
         planner_usages: list[TokenUsage] = []
         planner_model_calls = 0
         planner_elapsed = 0.0
+        planner_failed = False
         plan_update: dict[str, Any] = {}
         if trigger:
             try:
@@ -204,6 +205,7 @@ class ControlledAgentPolicy(SingleCallPolicy):
                 planner_model_calls = planner_result.model_calls
                 planner_elapsed = planner_result.elapsed_seconds
             except PlannerFailure as exc:
+                planner_failed = True
                 trace.add_planner_failure(exc)
                 planner_errors.extend(exc.errors)
                 planner_usages.extend(exc.usages)
@@ -292,6 +294,7 @@ class ControlledAgentPolicy(SingleCallPolicy):
                         planner_model_calls=planner_model_calls,
                         planner_usages=planner_usages,
                         planner_errors=planner_errors,
+                        planner_failed=planner_failed,
                         planner_elapsed=planner_elapsed,
                         enrichment_errors=enrichment_errors,
                         tool_executions=tool_executions,
@@ -319,6 +322,7 @@ class ControlledAgentPolicy(SingleCallPolicy):
                         planner_model_calls=planner_model_calls,
                         planner_usages=planner_usages,
                         planner_errors=planner_errors,
+                        planner_failed=planner_failed,
                         planner_elapsed=planner_elapsed,
                         enrichment_errors=enrichment_errors,
                         tool_executions=tool_executions,
@@ -369,6 +373,7 @@ class ControlledAgentPolicy(SingleCallPolicy):
                 planner_model_calls=planner_model_calls,
                 planner_usages=tuple(planner_usages),
                 planner_errors=tuple(planner_errors),
+                planner_failed=planner_failed,
                 planner_elapsed_seconds=planner_elapsed,
                 enrichment_errors=tuple(enrichment_errors),
                 decision_normalizations=tuple(decision_normalizations),
@@ -400,6 +405,7 @@ class ControlledAgentPolicy(SingleCallPolicy):
         planner_model_calls: int,
         planner_usages: list[TokenUsage],
         planner_errors: list[str],
+        planner_failed: bool,
         planner_elapsed: float,
         enrichment_errors: list[str],
         tool_executions: tuple[dict[str, Any], ...],
@@ -433,6 +439,7 @@ class ControlledAgentPolicy(SingleCallPolicy):
             planner_model_calls=planner_model_calls,
             planner_usages=tuple(planner_usages),
             planner_errors=tuple(planner_errors),
+            planner_failed=planner_failed,
             planner_elapsed_seconds=planner_elapsed,
             enrichment_errors=tuple(enrichment_errors),
         ) from cause

@@ -118,6 +118,7 @@ class PolicyResult:
     planner_model_calls: int = 0
     planner_usages: tuple[TokenUsage, ...] = ()
     planner_errors: tuple[str, ...] = ()
+    planner_failed: bool = False
     planner_elapsed_seconds: float = 0.0
     enrichment_errors: tuple[str, ...] = ()
     decision_normalizations: tuple[str, ...] = ()
@@ -165,6 +166,7 @@ class DecisionRecord:
     planner_model_calls: int = 0
     planner_usages: tuple[TokenUsage, ...] = ()
     planner_errors: tuple[str, ...] = ()
+    planner_failed: bool = False
     planner_elapsed_seconds: float = 0.0
     enrichment_errors: tuple[str, ...] = ()
     decision_normalizations: tuple[str, ...] = ()

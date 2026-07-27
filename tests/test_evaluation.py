@@ -213,6 +213,7 @@ def test_summarizes_controlled_agent_planning_and_predictions(tmp_path) -> None:
     assert metrics["replan_decisions"] == 1
     assert metrics["planner_model_calls"] == 1
     assert metrics["planner_total_tokens"] == 12
+    assert metrics["planner_failure_decisions"] == 0
     assert metrics["prediction_resolutions"] == 1
     assert metrics["prediction_matches"] == 1
     assert metrics["tactical_tool_decisions"] == 2
@@ -492,6 +493,33 @@ def test_controlled_agent_quality_requires_plan_and_prediction_coverage() -> Non
     )
     assert any(
         "prediction_coverage" in violation
+        for violation in quality["violations"]
+    )
+
+
+def test_controlled_quality_distinguishes_recovered_planner_error() -> None:
+    metrics = aggregate_runs([run_entry("max-base-power", ["win"])])
+    metrics.update(
+        {
+            "tactical_tool_coverage": 1.0,
+            "battle_plan_coverage": 1.0,
+            "prediction_coverage": 1.0,
+            "planner_error_rate": 1.0,
+            "planner_recovered_error_rate": 1.0,
+            "planner_failure_rate": 0.0,
+            "enrichment_error_rate": 0.0,
+        }
+    )
+
+    quality = assess_quality(metrics, policy_mode="controlled-agent")
+
+    assert quality["status"] == "valid"
+
+    metrics["planner_failure_rate"] = 1.0
+    quality = assess_quality(metrics, policy_mode="controlled-agent")
+    assert quality["status"] == "invalid"
+    assert any(
+        "planner_failure_rate" in violation
         for violation in quality["violations"]
     )
 

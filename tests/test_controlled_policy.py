@@ -224,8 +224,36 @@ async def test_planner_failure_uses_neutral_plan_but_action_continues() -> None:
     assert result.battle_plan["version"] == 0
     assert result.planner_model_calls == 2
     assert result.planner_errors
+    assert result.planner_failed is True
     assert result.decision.action_id == "move:thunderbolt"
     assert result.model_calls == 3
+
+
+@pytest.mark.asyncio
+async def test_repaired_planner_error_is_not_a_final_failure() -> None:
+    invalid_plan = json.dumps(
+        {
+            "win_condition": "Invalid.",
+            "preserve": ["missingno"],
+            "priority_targets": [],
+            "tera_policy": "Hold.",
+            "risk_posture": "balanced",
+            "replan_triggers": [],
+        }
+    )
+    client = ScriptedModelClient(
+        [invalid_plan, plan_json(), action_json()]
+    )
+
+    result = await ControlledAgentPolicy(client).decide(
+        snapshot(),
+        catalog(),
+        battle=battle([["", "turn", "1"]]),
+    )
+
+    assert result.planner_errors
+    assert result.planner_failed is False
+    assert result.battle_plan["version"] == 1
 
 
 @pytest.mark.asyncio
