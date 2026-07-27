@@ -12,6 +12,8 @@ from showdown_mind.battle_memory import BattleMemory
 from showdown_mind.controlled_policy import (
     ControlledAgentPolicy,
     ControlledBattleState,
+    _maintain_plan,
+    _parse_controlled_decision,
     _plan_trigger,
 )
 from showdown_mind.domain import BattleSnapshot, LegalAction
@@ -333,11 +335,224 @@ def test_plan_reacts_only_to_faints_that_invalidate_it() -> None:
         new_events=({"kind": "faint", "actor": "own:eevee"},),
         changes=(),
     )
+    maintained, maintenance = _maintain_plan(
+        state.plan,
+        turn=2,
+        new_events=({"kind": "faint", "actor": "opponent:gyarados"},),
+    )
+    state.plan = maintained
     relevant = _plan_trigger(
         state,
         new_events=({"kind": "faint", "actor": "opponent:gyarados"},),
         changes=(),
+        plan_maintenance=maintenance,
     )
 
     assert unrelated == ""
-    assert relevant == "target_fainted"
+    assert relevant == ""
+    assert state.plan is not None
+    assert state.plan.priority_targets == ()
+    assert maintenance["removed_priority_targets"] == ["gyarados"]
+    assert maintenance["requires_replan"] is False
+
+
+def test_losing_a_preserved_pokemon_is_pruned_and_still_replans() -> None:
+    plan = BattlePlan(
+        version=1,
+        created_turn=1,
+        win_condition="Preserve Pikachu for Gyarados.",
+        preserve=("pikachu",),
+        priority_targets=("gyarados",),
+        tera_policy="Hold.",
+        risk_posture="balanced",
+        replan_triggers=("preserve_fainted", "target_fainted"),
+    )
+    maintained, maintenance = _maintain_plan(
+        plan,
+        turn=3,
+        new_events=({"kind": "faint", "actor": "own:pikachu"},),
+    )
+    state = ControlledBattleState(
+        memory=BattleMemory("battle-controlled"),
+        plan=maintained,
+    )
+
+    trigger = _plan_trigger(
+        state,
+        new_events=({"kind": "faint", "actor": "own:pikachu"},),
+        changes=(),
+        plan_maintenance=maintenance,
+    )
+
+    assert maintained is not None
+    assert maintained.preserve == ()
+    assert maintenance["removed_preserve"] == ["pikachu"]
+    assert maintenance["requires_replan"] is True
+    assert trigger == "preserve_fainted"
+
+
+@pytest.mark.asyncio
+async def test_target_faint_uses_local_plan_maintenance_without_planner_call() -> None:
+    client = ScriptedModelClient([plan_json(), action_json(), action_json()])
+    policy = ControlledAgentPolicy(client)
+    live_battle = battle([["", "turn", "1"]])
+    await policy.decide(snapshot(), catalog(), battle=live_battle)
+    live_battle._replay_data.extend(
+        [
+            ["", "faint", "p2a: Gyarados"],
+            ["", "turn", "2"],
+        ]
+    )
+
+    result = await policy.decide(
+        snapshot(turn=2, request_id=2),
+        catalog(),
+        battle=live_battle,
+    )
+
+    assert len(client.requests) == 3
+    assert result.model_calls == 1
+    assert result.expected_model_calls == 1
+    assert result.planner_model_calls == 0
+    assert result.plan_trigger == ""
+    assert result.battle_plan["priority_targets"] == ()
+    assert result.plan_maintenance["removed_priority_targets"] == ["gyarados"]
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_normalization"),
+    [
+        (
+            {
+                "action_id": "move:thunderbolt",
+                "confidence": 0.8,
+                "opponent_prediction": json.dumps(
+                    {
+                        "kind": "attack",
+                        "detail": "waterfall",
+                        "confidence": 0.6,
+                    }
+                ),
+                "request_replan": False,
+                "reason_codes": ["DAMAGE"],
+                "short_rationale": "Use reliable damage.",
+            },
+            "opponent_prediction_json_string",
+        ),
+        (
+            {
+                "action_id": "move:thunderbolt",
+                "confidence": 0.8,
+                "opponent_prediction": {
+                    "kind": "attack",
+                    "detail": "waterfall",
+                    "confidence": 0.6,
+                },
+                "request_replan": False,
+                "reason_codes": json.dumps(["DAMAGE", "STAB"]),
+                "short_rationale": "Use reliable damage.",
+            },
+            "reason_codes_json_string",
+        ),
+        (
+            {
+                "action_id": "move:thunderbolt",
+                "confidence": 0.8,
+                "opponent_prediction": {
+                    "kind": "attack",
+                    "detail": "waterfall",
+                    "confidence": 0.6,
+                },
+                "request_replan": False,
+                "reason_codes": "Thunderbolt is a reliable knockout.",
+            },
+            "reason_codes_prose_promoted_to_rationale",
+        ),
+    ],
+)
+def test_controlled_protocol_normalizes_observed_string_shapes(
+    payload: dict,
+    expected_normalization: str,
+) -> None:
+    normalizations: list[str] = []
+
+    decision = _parse_controlled_decision(
+        json.dumps(payload),
+        catalog(),
+        normalizations=normalizations,
+    )
+
+    assert decision.action_id == "move:thunderbolt"
+    assert expected_normalization in normalizations
+
+
+def test_controlled_protocol_quotes_observed_unquoted_final_rationale() -> None:
+    content = (
+        '{"action_id":"move:thunderbolt","confidence":0.8,'
+        '"opponent_prediction":{"kind":"attack","detail":"waterfall",'
+        '"confidence":0.6},"request_replan":false,'
+        '"reason_codes":["DAMAGE"],'
+        '"short_rationale": Thunderbolt secures reliable damage.}'
+    )
+    normalizations: list[str] = []
+
+    decision = _parse_controlled_decision(
+        content,
+        catalog(),
+        normalizations=normalizations,
+    )
+
+    assert decision.short_rationale == "Thunderbolt secures reliable damage."
+    assert normalizations == ["unquoted_short_rationale_quoted"]
+
+
+def test_controlled_protocol_accepts_new_flat_prediction_fields() -> None:
+    content = json.dumps(
+        {
+            "action_id": "move:thunderbolt",
+            "confidence": 0.8,
+            "prediction_kind": "attack",
+            "prediction_detail": "waterfall",
+            "prediction_confidence": 0.6,
+            "request_replan": False,
+            "reason_codes": ["DAMAGE"],
+            "short_rationale": "Use reliable damage.",
+        }
+    )
+
+    decision = _parse_controlled_decision(content, catalog())
+
+    assert decision.opponent_prediction == {
+        "kind": "attack",
+        "detail": "waterfall",
+        "confidence": 0.6,
+    }
+
+
+def test_controlled_protocol_still_rejects_illegal_action_ids() -> None:
+    content = action_json().replace(
+        "move:thunderbolt",
+        "move:flamethrower",
+    )
+
+    with pytest.raises(ValueError, match="not currently legal"):
+        _parse_controlled_decision(content, catalog())
+
+
+def test_controlled_protocol_corrects_one_unique_action_id_typo() -> None:
+    content = action_json().replace(
+        "move:thunderbolt",
+        "move:thunderbol",
+    )
+    normalizations: list[str] = []
+
+    decision = _parse_controlled_decision(
+        content,
+        catalog(),
+        normalizations=normalizations,
+    )
+
+    assert decision.action_id == "move:thunderbolt"
+    assert normalizations == [
+        "action_id_typo_corrected:move:thunderbol->move:thunderbolt"
+    ]

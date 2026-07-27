@@ -657,6 +657,9 @@ def summarize_decision_log(path: Path) -> dict[str, Any]:
     rationales = 0
     battle_plan_decisions = 0
     replan_decisions = 0
+    plan_maintenance_decisions = 0
+    locally_removed_preserve = 0
+    locally_removed_priority_targets = 0
     planner_model_calls = 0
     planner_error_decisions = 0
     planner_failure_decisions = 0
@@ -717,6 +720,15 @@ def summarize_decision_log(path: Path) -> dict[str, Any]:
         rationales += bool(str(record.get("short_rationale") or "").strip())
         battle_plan_decisions += bool(record.get("battle_plan"))
         replan_decisions += bool(str(record.get("plan_trigger") or ""))
+        maintenance = record.get("plan_maintenance")
+        if isinstance(maintenance, dict) and maintenance:
+            plan_maintenance_decisions += 1
+            locally_removed_preserve += len(
+                maintenance.get("removed_preserve") or []
+            )
+            locally_removed_priority_targets += len(
+                maintenance.get("removed_priority_targets") or []
+            )
         planner_model_calls += int(record.get("planner_model_calls", 0))
         has_planner_errors = bool(record.get("planner_errors"))
         planner_failed = bool(record.get("planner_failed", False))
@@ -784,6 +796,9 @@ def summarize_decision_log(path: Path) -> dict[str, Any]:
         "rationale_decisions": rationales,
         "battle_plan_decisions": battle_plan_decisions,
         "replan_decisions": replan_decisions,
+        "plan_maintenance_decisions": plan_maintenance_decisions,
+        "locally_removed_preserve": locally_removed_preserve,
+        "locally_removed_priority_targets": locally_removed_priority_targets,
         "planner_model_calls": planner_model_calls,
         "planner_error_decisions": planner_error_decisions,
         "planner_failure_decisions": planner_failure_decisions,
@@ -946,6 +961,9 @@ def aggregate_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
             "rationale_decisions",
             "battle_plan_decisions",
             "replan_decisions",
+            "plan_maintenance_decisions",
+            "locally_removed_preserve",
+            "locally_removed_priority_targets",
             "planner_model_calls",
             "planner_error_decisions",
             "planner_failure_decisions",
@@ -1033,6 +1051,15 @@ def aggregate_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
         ),
         "replan_decisions": totals["replan_decisions"],
         "replan_rate": _rate(totals["replan_decisions"], decisions),
+        "plan_maintenance_decisions": totals["plan_maintenance_decisions"],
+        "plan_maintenance_rate": _rate(
+            totals["plan_maintenance_decisions"],
+            decisions,
+        ),
+        "locally_removed_preserve": totals["locally_removed_preserve"],
+        "locally_removed_priority_targets": totals[
+            "locally_removed_priority_targets"
+        ],
         "planner_model_calls": totals["planner_model_calls"],
         "planner_error_decisions": totals["planner_error_decisions"],
         "planner_error_rate": _rate(

@@ -114,6 +114,7 @@ class PolicyResult:
     belief_changes: tuple[dict[str, Any], ...] = ()
     battle_plan: dict[str, Any] = field(default_factory=dict)
     plan_update: dict[str, Any] = field(default_factory=dict)
+    plan_maintenance: dict[str, Any] = field(default_factory=dict)
     plan_trigger: str = ""
     planner_model_calls: int = 0
     planner_usages: tuple[TokenUsage, ...] = ()
@@ -162,6 +163,7 @@ class DecisionRecord:
     belief_changes: tuple[dict[str, Any], ...] = ()
     battle_plan: dict[str, Any] = field(default_factory=dict)
     plan_update: dict[str, Any] = field(default_factory=dict)
+    plan_maintenance: dict[str, Any] = field(default_factory=dict)
     plan_trigger: str = ""
     planner_model_calls: int = 0
     planner_usages: tuple[TokenUsage, ...] = ()

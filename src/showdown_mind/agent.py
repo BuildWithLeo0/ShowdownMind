@@ -79,6 +79,7 @@ class ResearchPlayer(Player):
         belief_changes: tuple[dict[str, Any], ...] = ()
         battle_plan: dict[str, Any] = {}
         plan_update: dict[str, Any] = {}
+        plan_maintenance: dict[str, Any] = {}
         plan_trigger = ""
         planner_model_calls = 0
         planner_usages: tuple[TokenUsage, ...] = ()
@@ -123,6 +124,7 @@ class ResearchPlayer(Player):
             belief_changes = result.belief_changes
             battle_plan = result.battle_plan
             plan_update = result.plan_update
+            plan_maintenance = result.plan_maintenance
             plan_trigger = result.plan_trigger
             planner_model_calls = result.planner_model_calls
             planner_usages = result.planner_usages
@@ -156,6 +158,7 @@ class ResearchPlayer(Player):
             belief_changes = exc.belief_changes
             battle_plan = exc.battle_plan
             plan_update = exc.plan_update
+            plan_maintenance = exc.plan_maintenance
             plan_trigger = exc.plan_trigger
             planner_model_calls = exc.planner_model_calls
             planner_usages = exc.planner_usages
@@ -209,6 +212,7 @@ class ResearchPlayer(Player):
             belief_changes=belief_changes,
             battle_plan=battle_plan,
             plan_update=plan_update,
+            plan_maintenance=plan_maintenance,
             plan_trigger=plan_trigger,
             planner_model_calls=planner_model_calls,
             planner_usages=planner_usages,

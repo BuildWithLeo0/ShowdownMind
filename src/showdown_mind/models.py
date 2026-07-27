@@ -154,10 +154,17 @@ class DeterministicModelClient:
             "reason_codes": ["DAMAGE"],
             "short_rationale": "Choose the legal move with the highest base power.",
         }
-        if "opponent_prediction" in request.tool.parameters.get(
-            "properties",
-            {},
-        ):
+        properties = request.tool.parameters.get("properties", {})
+        if "prediction_kind" in properties:
+            decision.update(
+                {
+                    "prediction_kind": "unknown",
+                    "prediction_detail": "",
+                    "prediction_confidence": 0.0,
+                    "request_replan": False,
+                }
+            )
+        elif "opponent_prediction" in properties:
             decision.update(
                 {
                     "opponent_prediction": {

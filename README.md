@@ -129,7 +129,9 @@ The model must call:
 choose_battle_action(
   action_id,
   confidence,
-  opponent_prediction,
+  prediction_kind,
+  prediction_detail,
+  prediction_confidence,
   request_replan,
   reason_codes,
   short_rationale
@@ -138,7 +140,7 @@ choose_battle_action(
 
 `action_id` is restricted to the current legal-action enum. The rationale is a
 required public sentence, not private chain-of-thought. Controlled-Agent limits
-it to 160 characters and the prediction detail to 60 characters. The program
+it to 120 characters and the prediction detail to 48 characters. The program
 validates every argument again before resolving the ID into a real `poke-env`
 battle order.
 
@@ -178,7 +180,8 @@ The tactical calculator runs inside Python every decision; the LLM does not
 choose whether to invoke it. Only two native model tools exist:
 
 - `update_battle_plan`, called on the first decision or after a meaningful
-  change such as a faint, Tera, important belief change, or requested replan;
+  strategic change such as losing a protected ally, Tera, important belief
+  change, or requested replan;
 - `choose_battle_action`, called on every decision with a legal action ID,
   confidence, short reason, next-opponent-action prediction, and replan flag.
 
@@ -188,13 +191,21 @@ Agent keeps the previous plan or installs a neutral plan and still chooses a
 legal action. Memory lasts for one battle only; there is no vector database,
 cross-battle memory, open-ended ReAct loop, or web search.
 
+When a listed opponent priority target faints, Python removes it from the plan
+locally instead of asking the Planner to restate the strategy. Losing a
+protected ally still triggers the Planner. Both paths are recorded separately
+as deterministic plan maintenance and model-authored replanning.
+
 The action model and Planner receive different bounded views. The action model
 gets the active opponent's hypotheses, four recent events, and per-action
 tactical estimates. The Planner gets the broader one-battle evidence and a
 strategic tactical summary without repeated per-action damage details. If a
-provider returns more than three known reason codes, the controller keeps the
-first three and records that normalization; unknown codes and malformed JSON
-still require the single repair attempt.
+provider returns more than three known reason codes, JSON-encodes a prediction
+or reason-code list inside a string, or leaves the final public rationale
+unquoted, the controller applies a narrow, recorded normalization. Illegal
+actions with one unambiguous character typo can also be corrected without
+changing action kind or Tera modifiers. Ambiguous actions, unknown codes, and
+arbitrary malformed JSON still require the single repair attempt.
 
 ### Use the tactical calculator tool
 
@@ -369,6 +380,44 @@ The comparison uses a reproducible stratified bootstrap and reports
 and cost remain explicit trade-offs rather than being hidden in one arbitrary
 score.
 
+## Run fixed tactical scenarios
+
+Build a frozen 20-scenario bank from existing controlled-Agent decision logs:
+
+```bash
+uv run showdown-mind scenarios build \
+  .runtime/evaluations/controlled-agent-v2-full/runs \
+  --output benchmarks/scenarios/gen9randombattle-core-v1.json \
+  --limit 20
+```
+
+The bank stores the exact player-visible action context, legal actions, source
+battle and turn, historical choice, and calculator recommendation. It excludes
+fallback decisions and never stores unrevealed opponent truth. Validate it
+without loading credentials or calling a model:
+
+```bash
+uv run showdown-mind scenarios validate \
+  benchmarks/scenarios/gen9randombattle-core-v1.json
+```
+
+Preview the number of model calls:
+
+```bash
+uv run showdown-mind scenarios evaluate \
+  benchmarks/scenarios/gen9randombattle-core-v1.json \
+  --output .runtime/scenarios/candidate-report.json
+```
+
+Add `--run` and `--env-file .env` to evaluate the configured live model. The
+scenario runner calls only `choose_battle_action`: it does not start Showdown,
+rerun the Planner, or rebuild tactical state. `--deterministic --run` exercises
+the complete benchmark offline with the test model.
+
+Historical-action agreement and calculator alignment are regression signals,
+not proof of tactical correctness. The bank reserves `acceptable_action_ids`
+for later expert-curated labels; only those should be treated as answer keys.
+
 ## Review a battle visually
 
 Generate a local review page from any single-battle decision log:
@@ -438,3 +487,6 @@ The experiment matrix and comparison rules are described in the
 [evaluation system design](docs/plans/2026-07-24-agent-evaluation-system-design.md).
 The current research architecture is specified in the
 [controlled Agent design](docs/plans/2026-07-27-controlled-agent-architecture-design.md).
+Planner maintenance, protocol normalization, and the fixed-scenario benchmark
+are specified in the
+[v3 optimization design](docs/plans/2026-07-27-planner-protocol-scenario-benchmark-design.md).

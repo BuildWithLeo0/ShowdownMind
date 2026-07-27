@@ -30,6 +30,12 @@ from showdown_mind.models import (
 from showdown_mind.policy import POLICY_MODES, PolicyFailure
 from showdown_mind.policy_input import POLICY_INPUT_FORMATS
 from showdown_mind.prompt_benchmark import benchmark_decision_log
+from showdown_mind.scenario_benchmark import (
+    build_scenario_bank,
+    evaluate_scenario_bank,
+    load_scenario_bank,
+    scenario_bank_summary,
+)
 from showdown_mind.showdown import (
     ShowdownError,
     managed_showdown_server,
@@ -248,6 +254,47 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("baseline_report", type=Path)
     compare.add_argument("candidate_report", type=Path)
     compare.add_argument("--output", type=Path, required=True)
+
+    scenarios = subparsers.add_parser(
+        "scenarios",
+        help="build and run fixed controlled-Agent decision benchmarks",
+    )
+    scenario_subparsers = scenarios.add_subparsers(
+        dest="scenarios_command",
+        required=True,
+    )
+    scenario_build = scenario_subparsers.add_parser(
+        "build",
+        help="extract a fixed scenario bank from decision JSONL logs",
+    )
+    scenario_build.add_argument("sources", nargs="+", type=Path)
+    scenario_build.add_argument("--output", type=Path, required=True)
+    scenario_build.add_argument("--limit", type=int, default=20)
+    scenario_build.add_argument("--force", action="store_true")
+
+    scenario_validate = scenario_subparsers.add_parser(
+        "validate",
+        help="validate and summarize a fixed scenario bank offline",
+    )
+    scenario_validate.add_argument("bank", type=Path)
+
+    scenario_evaluate = scenario_subparsers.add_parser(
+        "evaluate",
+        help="preview or run the action model on a fixed scenario bank",
+    )
+    scenario_evaluate.add_argument("bank", type=Path)
+    scenario_evaluate.add_argument("--output", type=Path, required=True)
+    scenario_evaluate.add_argument("--limit", type=int)
+    scenario_evaluate.add_argument(
+        "--run",
+        action="store_true",
+        help="make model calls; without this flag only preview the benchmark",
+    )
+    scenario_evaluate.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="use the offline deterministic model double instead of the live model",
+    )
     return parser
 
 
@@ -443,6 +490,67 @@ def _run_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_scenarios(args: argparse.Namespace) -> int:
+    if args.scenarios_command == "build":
+        summary = build_scenario_bank(
+            list(args.sources),
+            output_path=args.output,
+            limit=args.limit,
+            force=args.force,
+        )
+        print(json.dumps(summary.to_dict(), indent=2, sort_keys=True))
+        return 0
+    bank = load_scenario_bank(args.bank)
+    if args.scenarios_command == "validate":
+        summary = scenario_bank_summary(bank, path=args.bank)
+        print(json.dumps(summary.to_dict(), indent=2, sort_keys=True))
+        return 0
+    if args.scenarios_command == "evaluate":
+        scenarios = list(bank["scenarios"])
+        if args.limit is not None:
+            if args.limit <= 0:
+                raise ValueError("--limit must be positive")
+            scenarios = scenarios[: args.limit]
+        if not args.run:
+            print(
+                json.dumps(
+                    {
+                        "bank": str(args.bank),
+                        "output": str(args.output),
+                        "scenarios": len(scenarios),
+                        "would_call_model": len(scenarios),
+                        "deterministic": bool(args.deterministic),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+
+        async def execute() -> None:
+            client = (
+                DeterministicModelClient()
+                if args.deterministic
+                else live_model_client_from_env()
+            )
+            try:
+                report = await evaluate_scenario_bank(
+                    client,
+                    bank,
+                    output_path=args.output,
+                    limit=args.limit,
+                )
+            finally:
+                close = getattr(client, "aclose", None)
+                if callable(close):
+                    await close()
+            print(json.dumps(report["metrics"], indent=2, sort_keys=True))
+
+        asyncio.run(execute())
+        return 0
+    raise ValueError(f"unknown scenarios command: {args.scenarios_command}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -473,6 +581,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run_evaluate(args)
         if args.command == "compare":
             return _run_compare(args)
+        if args.command == "scenarios":
+            return _run_scenarios(args)
     except PolicyFailure as exc:
         detail = exc.errors[-1] if exc.errors else str(exc)
         print(f"error: model policy failed: {detail}", file=sys.stderr)

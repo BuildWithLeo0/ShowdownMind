@@ -139,7 +139,7 @@ def _sanitize_provider_url(value: Any) -> str | None:
 def _policy_architecture(policy_mode: str) -> dict[str, Any]:
     if policy_mode == "controlled-agent":
         return {
-            "kind": "hierarchical-controlled-agent-v2",
+            "kind": "hierarchical-controlled-agent-v3",
             "decision_context_schema": "controlled-agent-v2",
             "battle_memory": "battle-memory-v1",
             "belief_tracker": "rules-plus-public-random-battle-priors-v1",
@@ -149,8 +149,9 @@ def _policy_architecture(policy_mode: str) -> dict[str, Any]:
             "tactical_analysis": "automatic-every-turn",
             "action_context": "active-opponent-and-current-tactics-only",
             "planner_context": "strategic-summary-without-per-action-details",
-            "output_normalization": "known-reason-code-overflow-only",
-            "planner": "event-triggered-battle-plan-v1",
+            "action_tool_schema": "flat-opponent-prediction-v2",
+            "output_normalization": "bounded-observed-protocol-variants-v2",
+            "planner": "event-triggered-with-local-target-maintenance-v2",
             "model_tools": [
                 "update_battle_plan",
                 "choose_battle_action",

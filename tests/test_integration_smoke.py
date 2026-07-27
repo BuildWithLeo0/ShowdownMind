@@ -86,7 +86,7 @@ async def test_controlled_agent_finishes_with_memory_plan_and_tactics(tmp_path) 
         for record in records
     )
     assert manifest["policy"]["architecture"]["kind"] == (
-        "hierarchical-controlled-agent-v2"
+        "hierarchical-controlled-agent-v3"
     )
 
 

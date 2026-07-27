@@ -87,6 +87,14 @@ def decision(battle_id: str, *, turn: int = 1) -> dict:
             "replan_triggers": ["preserve_fainted"],
         },
         "plan_update": {},
+        "plan_maintenance": {
+            "schema": "plan-maintenance-v1",
+            "turn": 1,
+            "removed_preserve": [],
+            "removed_priority_targets": ["Squirtle"],
+            "requires_replan": False,
+            "reason": "public_faint_events",
+        },
         "plan_trigger": "initial",
         "planner_model_calls": 1,
         "planner_elapsed_seconds": 0.25,
@@ -239,6 +247,9 @@ def test_builds_single_file_viewer_with_sanitized_decisions(tmp_path) -> None:
     assert payload["decisions"][0]["battle_plan"]["win_condition"] == (
         "Preserve Pikachu"
     )
+    assert payload["decisions"][0]["plan_maintenance"][
+        "removed_priority_targets"
+    ] == ["Squirtle"]
     assert payload["decisions"][0]["belief_state"]["hypotheses"][0]["value"] == (
         "icebeam"
     )

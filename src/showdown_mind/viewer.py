@@ -221,6 +221,7 @@ def _viewer_decision(record: dict[str, Any], index: int) -> dict[str, Any]:
         ("belief_state", {}),
         ("battle_plan", {}),
         ("plan_update", {}),
+        ("plan_maintenance", {}),
         ("opponent_prediction", {}),
     ):
         value = record.get(key, default)

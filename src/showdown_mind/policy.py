@@ -103,6 +103,7 @@ class PolicyFailure(RuntimeError):
         belief_changes: tuple[dict[str, Any], ...] = (),
         battle_plan: dict[str, Any] | None = None,
         plan_update: dict[str, Any] | None = None,
+        plan_maintenance: dict[str, Any] | None = None,
         plan_trigger: str = "",
         planner_model_calls: int = 0,
         planner_usages: tuple[TokenUsage, ...] = (),
@@ -132,6 +133,7 @@ class PolicyFailure(RuntimeError):
         self.belief_changes = belief_changes
         self.battle_plan = battle_plan or {}
         self.plan_update = plan_update or {}
+        self.plan_maintenance = plan_maintenance or {}
         self.plan_trigger = plan_trigger
         self.planner_model_calls = planner_model_calls
         self.planner_usages = planner_usages

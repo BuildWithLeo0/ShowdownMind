@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from poke_env.data import to_id_str
@@ -58,16 +59,19 @@ from showdown_mind.tactics import (
 
 CONTROLLED_INPUT_SCHEMA = "controlled-agent-v2"
 MAX_CONTEXT_CHARACTERS = 24_000
-CONTROLLED_MAX_RATIONALE_CHARACTERS = 160
-CONTROLLED_MAX_PREDICTION_CHARACTERS = 60
+CONTROLLED_MAX_RATIONALE_CHARACTERS = 120
+CONTROLLED_MAX_PREDICTION_CHARACTERS = 48
 CONTROLLED_SYSTEM_PROMPT = """You choose one legal action in a Pokémon Showdown battle.
 Use only the player-visible state, memory, hypotheses, plan, and estimates provided.
 Hypotheses are uncertain and must not be treated as hidden facts.
 Follow the battle plan when useful, but prioritize a legal action now.
 Call choose_battle_action exactly once with valid JSON arguments.
-Quote every string. Use at most three reason_codes.
-Keep the prediction detail brief. The rationale must be one short public
-sentence, not chain-of-thought."""
+Copy action_id exactly from the legal actions. Quote every string. Use at most
+three reason_codes.
+Use the flat prediction_kind, prediction_detail, and prediction_confidence
+fields; do not JSON-encode objects or arrays inside strings. Keep the prediction
+detail brief. The rationale must be one short public sentence, not
+chain-of-thought."""
 
 
 @dataclass
@@ -175,7 +179,17 @@ class ControlledAgentPolicy(SingleCallPolicy):
         )
         battle_input = compile_policy_input(snapshot, self._input_format)
         event_values = tuple(event.to_dict() for event in new_events)
-        trigger = _plan_trigger(state, new_events=event_values, changes=changes)
+        state.plan, plan_maintenance = _maintain_plan(
+            state.plan,
+            turn=snapshot.turn,
+            new_events=event_values,
+        )
+        trigger = _plan_trigger(
+            state,
+            new_events=event_values,
+            changes=changes,
+            plan_maintenance=plan_maintenance,
+        )
 
         trace = _ControlledTrace()
         planner_errors: list[str] = []
@@ -194,6 +208,7 @@ class ControlledAgentPolicy(SingleCallPolicy):
                         "beliefs": planner_belief_view,
                         "tactical": planner_tactical_view,
                         "trigger": trigger,
+                        "maintenance": plan_maintenance,
                     },
                     previous=state.plan,
                 )
@@ -285,6 +300,7 @@ class ControlledAgentPolicy(SingleCallPolicy):
                         changes=changes,
                         trigger=trigger,
                         plan_update=plan_update,
+                        plan_maintenance=plan_maintenance,
                         tactical_analysis=tactical_analysis,
                         policy_input=policy_input,
                         trace=trace,
@@ -313,6 +329,7 @@ class ControlledAgentPolicy(SingleCallPolicy):
                         changes=changes,
                         trigger=trigger,
                         plan_update=plan_update,
+                        plan_maintenance=plan_maintenance,
                         tactical_analysis=tactical_analysis,
                         policy_input=policy_input,
                         trace=trace,
@@ -369,6 +386,7 @@ class ControlledAgentPolicy(SingleCallPolicy):
                 belief_changes=changes,
                 battle_plan=state.plan.to_dict(),
                 plan_update=plan_update,
+                plan_maintenance=plan_maintenance,
                 plan_trigger=trigger,
                 planner_model_calls=planner_model_calls,
                 planner_usages=tuple(planner_usages),
@@ -396,6 +414,7 @@ class ControlledAgentPolicy(SingleCallPolicy):
         changes: tuple[dict[str, Any], ...],
         trigger: str,
         plan_update: dict[str, Any],
+        plan_maintenance: dict[str, Any],
         tactical_analysis: dict[str, Any],
         policy_input: CompiledPolicyInput,
         trace: _ControlledTrace,
@@ -435,6 +454,7 @@ class ControlledAgentPolicy(SingleCallPolicy):
             belief_changes=changes,
             battle_plan=state.plan.to_dict() if state.plan is not None else {},
             plan_update=plan_update,
+            plan_maintenance=plan_maintenance,
             plan_trigger=trigger,
             planner_model_calls=planner_model_calls,
             planner_usages=tuple(planner_usages),
@@ -487,30 +507,16 @@ def _plan_trigger(
     *,
     new_events: tuple[dict[str, Any], ...],
     changes: tuple[dict[str, Any], ...],
+    plan_maintenance: dict[str, Any] | None = None,
 ) -> str:
     if state.plan is None:
         return "initial"
     if state.pending_replan:
         return "policy_requested"
+    if (plan_maintenance or {}).get("requires_replan"):
+        return "preserve_fainted"
     plan = state.plan
     configured = set(plan.replan_triggers)
-    for event in new_events:
-        if event.get("kind") != "faint":
-            continue
-        actor = str(event.get("actor") or "")
-        side, _, species = actor.partition(":")
-        if (
-            side == "own"
-            and species in plan.preserve
-            and "preserve_fainted" in configured
-        ):
-            return "preserve_fainted"
-        if (
-            side == "opponent"
-            and species in plan.priority_targets
-            and "target_fainted" in configured
-        ):
-            return "target_fainted"
     for event in new_events:
         if event.get("kind") != "tera":
             continue
@@ -532,6 +538,70 @@ def _plan_trigger(
     ):
         return "belief_changed"
     return ""
+
+
+def _maintain_plan(
+    plan: BattlePlan | None,
+    *,
+    turn: int,
+    new_events: tuple[dict[str, Any], ...],
+) -> tuple[BattlePlan | None, dict[str, Any]]:
+    """Prune completed plan references without inventing a new strategy."""
+    if plan is None:
+        return None, {}
+    own_fainted: set[str] = set()
+    opponent_fainted: set[str] = set()
+    for event in new_events:
+        if event.get("kind") != "faint":
+            continue
+        side, _, species = str(event.get("actor") or "").partition(":")
+        species = to_id_str(species)
+        if not species:
+            continue
+        if side == "own":
+            own_fainted.add(species)
+        elif side == "opponent":
+            opponent_fainted.add(species)
+    removed_preserve = tuple(
+        species for species in plan.preserve if species in own_fainted
+    )
+    removed_targets = tuple(
+        species
+        for species in plan.priority_targets
+        if species in opponent_fainted
+    )
+    if not removed_preserve and not removed_targets:
+        return plan, {}
+    preserve = tuple(
+        species for species in plan.preserve if species not in own_fainted
+    )
+    targets = tuple(
+        species
+        for species in plan.priority_targets
+        if species not in opponent_fainted
+    )
+    triggers = tuple(
+        trigger
+        for trigger in plan.replan_triggers
+        if not (
+            (trigger == "preserve_fainted" and not preserve)
+            or (trigger == "target_fainted" and not targets)
+        )
+    )
+    maintained = replace(
+        plan,
+        preserve=preserve,
+        priority_targets=targets,
+        replan_triggers=triggers,
+    )
+    return maintained, {
+        "schema": "plan-maintenance-v1",
+        "turn": turn,
+        "removed_preserve": list(removed_preserve),
+        "removed_priority_targets": list(removed_targets),
+        "requires_replan": bool(removed_preserve),
+        "reason": "public_faint_events",
+    }
 
 
 def _compile_controlled_input(
@@ -619,25 +689,18 @@ def _controlled_action_tool(catalog: ActionCatalog) -> ModelTool:
                     "minimum": 0,
                     "maximum": 1,
                 },
-                "opponent_prediction": {
-                    "type": "object",
-                    "properties": {
-                        "kind": {
-                            "type": "string",
-                            "enum": list(PREDICTION_KINDS),
-                        },
-                        "detail": {
-                            "type": "string",
-                            "maxLength": CONTROLLED_MAX_PREDICTION_CHARACTERS,
-                        },
-                        "confidence": {
-                            "type": "number",
-                            "minimum": 0,
-                            "maximum": 1,
-                        },
-                    },
-                    "required": ["kind", "detail", "confidence"],
-                    "additionalProperties": False,
+                "prediction_kind": {
+                    "type": "string",
+                    "enum": list(PREDICTION_KINDS),
+                },
+                "prediction_detail": {
+                    "type": "string",
+                    "maxLength": CONTROLLED_MAX_PREDICTION_CHARACTERS,
+                },
+                "prediction_confidence": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
                 },
                 "request_replan": {"type": "boolean"},
                 "reason_codes": {
@@ -655,7 +718,9 @@ def _controlled_action_tool(catalog: ActionCatalog) -> ModelTool:
             "required": [
                 "action_id",
                 "confidence",
-                "opponent_prediction",
+                "prediction_kind",
+                "prediction_detail",
+                "prediction_confidence",
                 "request_replan",
                 "reason_codes",
                 "short_rationale",
@@ -671,9 +736,13 @@ def _parse_controlled_decision(
     *,
     normalizations: list[str] | None = None,
 ) -> PolicyDecision:
-    value = json.loads(content)
+    value = _load_controlled_json(content, normalizations=normalizations)
     if not isinstance(value, dict):
         raise TypeError("response must be a JSON object")
+    value = _normalize_controlled_payload(
+        value,
+        normalizations=normalizations,
+    )
     required = {
         "action_id",
         "confidence",
@@ -689,7 +758,17 @@ def _parse_controlled_decision(
     if extra:
         raise TypeError(f"unexpected fields: {', '.join(extra)}")
     action_id = value["action_id"]
-    if not isinstance(action_id, str) or not catalog.contains(action_id):
+    if not isinstance(action_id, str):
+        raise TypeError("action_id must be a string")
+    if not catalog.contains(action_id):
+        corrected_action_id = _unique_single_edit_action(action_id, catalog)
+        if corrected_action_id is not None:
+            if normalizations is not None:
+                normalizations.append(
+                    f"action_id_typo_corrected:{action_id}->{corrected_action_id}"
+                )
+            action_id = corrected_action_id
+    if not catalog.contains(action_id):
         raise ValueError(f"action_id {action_id!r} is not currently legal")
     confidence = _confidence(value["confidence"], "confidence")
     prediction = value["opponent_prediction"]
@@ -748,6 +827,145 @@ def _parse_controlled_decision(
     )
 
 
+def _load_controlled_json(
+    content: str,
+    *,
+    normalizations: list[str] | None,
+) -> Any:
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError as original:
+        repaired = _quote_final_rationale(content)
+        if repaired == content:
+            raise
+        try:
+            value = json.loads(repaired)
+        except json.JSONDecodeError:
+            raise original
+        if normalizations is not None:
+            normalizations.append("unquoted_short_rationale_quoted")
+        return value
+
+
+def _quote_final_rationale(content: str) -> str:
+    """Quote one observed malformed shape without becoming a JSON repairer."""
+    match = re.search(
+        r'("short_rationale"\s*:\s*)(?!")(.+)\}\s*$',
+        content,
+        flags=re.DOTALL,
+    )
+    if match is None:
+        return content
+    rationale = match.group(2).strip()
+    if not rationale or rationale[0] in "[{\"" or rationale in {
+        "true",
+        "false",
+        "null",
+    }:
+        return content
+    return (
+        content[: match.start(2)]
+        + json.dumps(rationale, ensure_ascii=False)
+        + "}"
+    )
+
+
+def _normalize_controlled_payload(
+    value: dict[str, Any],
+    *,
+    normalizations: list[str] | None,
+) -> dict[str, Any]:
+    normalized = dict(value)
+    prediction = normalized.get("opponent_prediction")
+    flat_fields = {
+        "prediction_kind",
+        "prediction_detail",
+        "prediction_confidence",
+    }
+    if flat_fields.issubset(normalized):
+        if prediction is not None:
+            raise TypeError("use either flat prediction fields or opponent_prediction")
+        normalized["opponent_prediction"] = {
+            "kind": normalized.pop("prediction_kind"),
+            "detail": normalized.pop("prediction_detail"),
+            "confidence": normalized.pop("prediction_confidence"),
+        }
+    else:
+        present_flat = flat_fields.intersection(normalized)
+        if present_flat:
+            raise TypeError("flat prediction fields are incomplete")
+        if isinstance(prediction, str):
+            try:
+                decoded = json.loads(prediction)
+            except json.JSONDecodeError:
+                decoded = None
+            if not isinstance(decoded, dict):
+                raise TypeError("opponent_prediction must be an object")
+            normalized["opponent_prediction"] = decoded
+            if normalizations is not None:
+                normalizations.append("opponent_prediction_json_string")
+
+    reason_codes = normalized.get("reason_codes")
+    if isinstance(reason_codes, str):
+        try:
+            decoded_codes = json.loads(reason_codes)
+        except json.JSONDecodeError:
+            decoded_codes = None
+        if isinstance(decoded_codes, list) and all(
+            isinstance(code, str) for code in decoded_codes
+        ):
+            normalized["reason_codes"] = decoded_codes
+            if normalizations is not None:
+                normalizations.append("reason_codes_json_string")
+        elif reason_codes in REASON_CODES or reason_codes in REASON_CODE_ALIASES:
+            normalized["reason_codes"] = [reason_codes]
+            if normalizations is not None:
+                normalizations.append("reason_code_string_wrapped")
+        elif (
+            "short_rationale" not in normalized
+            and reason_codes.strip()
+        ):
+            normalized["reason_codes"] = ["OTHER"]
+            normalized["short_rationale"] = reason_codes
+            if normalizations is not None:
+                normalizations.append("reason_codes_prose_promoted_to_rationale")
+    return normalized
+
+
+def _unique_single_edit_action(
+    action_id: str,
+    catalog: ActionCatalog,
+) -> str | None:
+    raw_parts = action_id.split(":")
+    if len(raw_parts) < 2:
+        return None
+    matches = []
+    for action in catalog.actions:
+        candidate = action.action_id
+        candidate_parts = candidate.split(":")
+        if (
+            len(candidate_parts) != len(raw_parts)
+            or candidate_parts[0] != raw_parts[0]
+            or candidate_parts[2:] != raw_parts[2:]
+        ):
+            continue
+        if _single_character_edit(raw_parts[1], candidate_parts[1]):
+            matches.append(candidate)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _single_character_edit(left: str, right: str) -> bool:
+    if left == right or abs(len(left) - len(right)) > 1:
+        return False
+    if len(left) == len(right):
+        return sum(a != b for a, b in zip(left, right, strict=True)) == 1
+    shorter, longer = (left, right) if len(left) < len(right) else (right, left)
+    for index, (short_char, long_char) in enumerate(zip(shorter, longer)):
+        if short_char != long_char:
+            return shorter[index:] == longer[index + 1 :]
+    return True
+
+
 def _repair_action_request(
     policy_input: CompiledPolicyInput,
     *,
@@ -769,8 +987,8 @@ def _repair_action_request(
                 ],
                 "instruction": (
                     f"Call {ACTION_TOOL_NAME} once with corrected valid JSON "
-                    "arguments. Quote every string and use at most three "
-                    "reason_codes."
+                    "arguments. Use flat prediction fields, quote every string, "
+                    "and use at most three reason_codes."
                 ),
             },
             ensure_ascii=False,

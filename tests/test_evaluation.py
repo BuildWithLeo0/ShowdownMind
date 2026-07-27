@@ -218,6 +218,10 @@ def test_summarizes_controlled_agent_planning_and_predictions(tmp_path) -> None:
     second = {
         **first,
         "plan_trigger": "",
+        "plan_maintenance": {
+            "removed_preserve": [],
+            "removed_priority_targets": ["gyarados"],
+        },
         "planner_model_calls": 0,
         "planner_elapsed_seconds": 0,
         "planner_usages": [],
@@ -237,6 +241,8 @@ def test_summarizes_controlled_agent_planning_and_predictions(tmp_path) -> None:
 
     assert metrics["battle_plan_decisions"] == 2
     assert metrics["replan_decisions"] == 1
+    assert metrics["plan_maintenance_decisions"] == 1
+    assert metrics["locally_removed_priority_targets"] == 1
     assert metrics["planner_model_calls"] == 1
     assert metrics["planner_total_tokens"] == 12
     assert metrics["planner_failure_decisions"] == 0

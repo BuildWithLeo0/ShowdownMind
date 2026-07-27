@@ -480,11 +480,13 @@ const planMarkup = (decision) => {
     return '<div class="empty-copy">这个策略模式没有本局作战计划。</div>';
   }
   const updated = Object.keys(decision.plan_update || {}).length > 0;
+  const maintained = Object.keys(decision.plan_maintenance || {}).length > 0;
+  const stateLabel = updated ? "UPDATED" : maintained ? "MAINTAINED" : "KEPT";
   return `
     <div class="plan-card">
       <div class="plan-heading">
         <strong>${escapeHtml(plan.win_condition || "Maintain a playable position")}</strong>
-        <span class="badge ${updated ? "is-signal" : ""}">${updated ? "UPDATED" : "KEPT"}</span>
+        <span class="badge ${updated || maintained ? "is-signal" : ""}">${stateLabel}</span>
       </div>
       <p>${escapeHtml(plan.tera_policy || "No Tera policy recorded.")}</p>
       ${keyValuesMarkup({
@@ -495,6 +497,8 @@ const planMarkup = (decision) => {
         risk_posture: plan.risk_posture,
         replan_triggers: plan.replan_triggers,
         request_replan: decision.request_replan,
+        locally_removed_preserve: decision.plan_maintenance?.removed_preserve,
+        locally_removed_targets: decision.plan_maintenance?.removed_priority_targets,
       })}
     </div>
   `;
@@ -566,6 +570,11 @@ const renderTrace = (decision) => {
   if (decision.planner.model_calls) {
     trace.push(
       `<div class="trace-item">Planner 因 <code>${escapeHtml(decision.plan_trigger || "unknown")}</code> 执行 ${decision.planner.model_calls} 次，耗时 ${decision.planner.elapsed_seconds.toFixed(2)}s，使用 ${decision.planner.usage.total_tokens.toLocaleString()} tokens。</div>`
+    );
+  }
+  if (Object.keys(decision.plan_maintenance || {}).length) {
+    trace.push(
+      `<div class="trace-item">计划控制器在本地移除：保护对象 ${escapeHtml((decision.plan_maintenance.removed_preserve || []).join(", ") || "—")}；已完成目标 ${escapeHtml((decision.plan_maintenance.removed_priority_targets || []).join(", ") || "—")}。${decision.plan_maintenance.requires_replan ? "该变化仍触发战略重规划。" : "本回合无需调用 Planner。"}</div>`
     );
   }
   for (const error of decision.planner.errors) {

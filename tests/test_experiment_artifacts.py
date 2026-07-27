@@ -64,10 +64,15 @@ def test_controlled_agent_manifest_records_architecture(tmp_path) -> None:
 
     manifest = json.loads(writer.paths.manifest.read_text(encoding="utf-8"))
     architecture = manifest["policy"]["architecture"]
-    assert architecture["kind"] == "hierarchical-controlled-agent-v2"
+    assert architecture["kind"] == "hierarchical-controlled-agent-v3"
     assert architecture["decision_context_schema"] == "controlled-agent-v2"
     assert architecture["tactical_analysis"] == "automatic-every-turn"
-    assert architecture["planner"] == "event-triggered-battle-plan-v1"
+    assert architecture["planner"] == (
+        "event-triggered-with-local-target-maintenance-v2"
+    )
+    assert architecture["action_tool_schema"] == (
+        "flat-opponent-prediction-v2"
+    )
     assert architecture["search"] is False
 
 
