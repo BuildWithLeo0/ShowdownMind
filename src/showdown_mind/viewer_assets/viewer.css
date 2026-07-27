@@ -471,7 +471,7 @@ button {
 
 .tabs {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   border-bottom: 1px solid var(--line);
 }
 
@@ -825,6 +825,61 @@ button {
   font-family: var(--mono);
   font-size: 9px;
   overflow-wrap: anywhere;
+}
+
+.agent-list,
+.belief-grid,
+.prediction-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.prediction-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.agent-list-item,
+.belief-card,
+.plan-card {
+  border: 1px solid var(--line);
+  background: rgba(13, 20, 21, 0.72);
+  padding: 14px 16px;
+}
+
+.agent-list-item,
+.belief-card > div,
+.plan-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.belief-card p,
+.plan-card p {
+  margin: 9px 0;
+}
+
+.belief-card small,
+.plan-card small,
+.agent-list-item span {
+  color: var(--muted);
+}
+
+.belief-tier {
+  color: var(--amber);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+}
+
+.belief-tier.is-likely {
+  color: var(--signal);
+}
+
+@media (max-width: 720px) {
+  .prediction-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .empty-copy {

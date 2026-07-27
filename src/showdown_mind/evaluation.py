@@ -19,7 +19,7 @@ from showdown_mind.policy_input import POLICY_INPUT_FORMATS
 
 EVALUATION_SCHEMA_VERSION = "1.0"
 COMPARISON_SCHEMA_VERSION = "1.0"
-DEFAULT_OPPONENTS = ("random", "max-base-power", "simple-heuristics")
+DEFAULT_OPPONENTS = ("max-base-power", "simple-heuristics")
 MIN_COMPARISON_BATTLES = 20
 BOOTSTRAP_ITERATIONS = 5_000
 FINAL_QUALITY_THRESHOLDS = {
@@ -28,6 +28,10 @@ FINAL_QUALITY_THRESHOLDS = {
     "min_tool_call_coverage": 0.95,
     "min_tactical_tool_coverage": 0.95,
     "min_rationale_coverage": 0.95,
+    "min_battle_plan_coverage": 0.95,
+    "min_prediction_coverage": 0.95,
+    "max_planner_error_rate": 0.10,
+    "max_enrichment_error_rate": 0.05,
 }
 HARD_STOP_THRESHOLDS = {
     "max_fallback_rate": 0.20,
@@ -35,6 +39,10 @@ HARD_STOP_THRESHOLDS = {
     "min_tool_call_coverage": 0.70,
     "min_tactical_tool_coverage": 0.70,
     "min_rationale_coverage": 0.70,
+    "min_battle_plan_coverage": 0.70,
+    "min_prediction_coverage": 0.70,
+    "max_planner_error_rate": 0.30,
+    "max_enrichment_error_rate": 0.20,
 }
 
 BattleRunner = Callable[..., Awaitable[AgentSmokeResult]]
@@ -280,6 +288,17 @@ def summarize_decision_log(path: Path) -> dict[str, Any]:
     tool_calls = 0
     tactical_tool_calls = 0
     rationales = 0
+    battle_plan_decisions = 0
+    replan_decisions = 0
+    planner_model_calls = 0
+    planner_error_decisions = 0
+    planner_input_tokens = 0
+    planner_output_tokens = 0
+    planner_total_tokens = 0
+    planner_latency = 0.0
+    enrichment_error_decisions = 0
+    prediction_decisions = 0
+    prediction_resolutions: dict[tuple[Any, ...], bool] = {}
     reason_counts: Counter[str] = Counter()
 
     for record in records:
@@ -323,6 +342,40 @@ def summarize_decision_log(path: Path) -> dict[str, Any]:
             for execution in executions
         )
         rationales += bool(str(record.get("short_rationale") or "").strip())
+        battle_plan_decisions += bool(record.get("battle_plan"))
+        replan_decisions += bool(str(record.get("plan_trigger") or ""))
+        planner_model_calls += int(record.get("planner_model_calls", 0))
+        planner_error_decisions += bool(record.get("planner_errors"))
+        planner_latency += float(record.get("planner_elapsed_seconds", 0.0))
+        enrichment_error_decisions += bool(record.get("enrichment_errors"))
+        for usage in record.get("planner_usages") or []:
+            if not isinstance(usage, dict):
+                continue
+            planner_input_tokens += int(usage.get("input_tokens", 0))
+            planner_output_tokens += int(usage.get("output_tokens", 0))
+            planner_total_tokens += int(usage.get("total_tokens", 0))
+        prediction_decisions += bool(record.get("opponent_prediction"))
+        memory = record.get("memory")
+        resolution = (
+            memory.get("previous_prediction_resolution")
+            if isinstance(memory, dict)
+            else None
+        )
+        if isinstance(resolution, dict):
+            predicted = resolution.get("predicted")
+            predicted_turn = (
+                predicted.get("decision_turn")
+                if isinstance(predicted, dict)
+                else None
+            )
+            resolution_key = (
+                predicted_turn,
+                resolution.get("observed_turn"),
+                resolution.get("evidence_event_id"),
+            )
+            prediction_resolutions[resolution_key] = bool(
+                resolution.get("matched")
+            )
         reason_counts.update(str(code) for code in record.get("reason_codes") or [])
 
     return {
@@ -338,6 +391,18 @@ def summarize_decision_log(path: Path) -> dict[str, Any]:
         "tool_call_decisions": tool_calls,
         "tactical_tool_decisions": tactical_tool_calls,
         "rationale_decisions": rationales,
+        "battle_plan_decisions": battle_plan_decisions,
+        "replan_decisions": replan_decisions,
+        "planner_model_calls": planner_model_calls,
+        "planner_error_decisions": planner_error_decisions,
+        "planner_input_tokens": planner_input_tokens,
+        "planner_output_tokens": planner_output_tokens,
+        "planner_total_tokens": planner_total_tokens,
+        "planner_latency_seconds": round(planner_latency, 6),
+        "enrichment_error_decisions": enrichment_error_decisions,
+        "prediction_decisions": prediction_decisions,
+        "prediction_resolutions": len(prediction_resolutions),
+        "prediction_matches": sum(prediction_resolutions.values()),
         "confidence_sum": round(sum(confidences), 6),
         "confidence_count": len(confidences),
         "input_tokens": input_tokens,
@@ -420,6 +485,17 @@ def aggregate_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
             "tool_call_decisions",
             "tactical_tool_decisions",
             "rationale_decisions",
+            "battle_plan_decisions",
+            "replan_decisions",
+            "planner_model_calls",
+            "planner_error_decisions",
+            "planner_input_tokens",
+            "planner_output_tokens",
+            "planner_total_tokens",
+            "enrichment_error_decisions",
+            "prediction_decisions",
+            "prediction_resolutions",
+            "prediction_matches",
             "confidence_count",
             "input_tokens",
             "output_tokens",
@@ -430,6 +506,10 @@ def aggregate_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
 
     confidence_sum = sum(run["decision_metrics"]["confidence_sum"] for run in runs)
     latency = sum(run["decision_metrics"]["decision_latency_seconds"] for run in runs)
+    planner_latency = sum(
+        run["decision_metrics"].get("planner_latency_seconds", 0.0)
+        for run in runs
+    )
     wall_seconds = sum(float(run["result"].get("elapsed_seconds", 0.0)) for run in runs)
     score_rate = _rate(wins + 0.5 * draws, battles)
     return {
@@ -464,6 +544,36 @@ def aggregate_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
             decisions,
         ),
         "rationale_coverage": _rate(totals["rationale_decisions"], decisions),
+        "battle_plan_coverage": _rate(
+            totals["battle_plan_decisions"],
+            decisions,
+        ),
+        "replan_decisions": totals["replan_decisions"],
+        "replan_rate": _rate(totals["replan_decisions"], decisions),
+        "planner_model_calls": totals["planner_model_calls"],
+        "planner_error_decisions": totals["planner_error_decisions"],
+        "planner_error_rate": _rate(
+            totals["planner_error_decisions"],
+            totals["replan_decisions"],
+        ),
+        "enrichment_error_decisions": totals["enrichment_error_decisions"],
+        "enrichment_error_rate": _rate(
+            totals["enrichment_error_decisions"],
+            decisions,
+        ),
+        "planner_input_tokens": totals["planner_input_tokens"],
+        "planner_output_tokens": totals["planner_output_tokens"],
+        "planner_total_tokens": totals["planner_total_tokens"],
+        "prediction_coverage": _rate(
+            totals["prediction_decisions"],
+            decisions,
+        ),
+        "prediction_resolutions": totals["prediction_resolutions"],
+        "prediction_matches": totals["prediction_matches"],
+        "prediction_accuracy": _rate(
+            totals["prediction_matches"],
+            totals["prediction_resolutions"],
+        ),
         "average_confidence": _rate(
             confidence_sum,
             totals["confidence_count"],
@@ -475,6 +585,16 @@ def aggregate_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
         "average_tokens_per_decision": _rate(totals["total_tokens"], decisions),
         "decision_latency_seconds": round(latency, 6),
         "average_decision_latency_seconds": _rate(latency, decisions),
+        "planner_latency_seconds": round(planner_latency, 6),
+        "average_planner_latency_seconds": _rate(
+            planner_latency,
+            totals["replan_decisions"],
+        ),
+        "agent_latency_seconds": round(latency + planner_latency, 6),
+        "average_agent_latency_seconds": _rate(
+            latency + planner_latency,
+            decisions,
+        ),
         "wall_seconds": round(wall_seconds, 6),
         "average_wall_seconds_per_battle": _rate(wall_seconds, battles),
         "reason_code_counts": dict(sorted(reason_counts.items())),
@@ -520,13 +640,40 @@ def assess_quality(
             thresholds["min_rationale_coverage"],
         ),
     )
-    if policy_mode == "tactical-tool":
+    if policy_mode in {"tactical-tool", "controlled-agent"}:
         checks += (
             (
                 "tactical_tool_coverage",
                 float(metrics.get("tactical_tool_coverage", 0.0)),
                 ">=",
                 thresholds["min_tactical_tool_coverage"],
+            ),
+        )
+    if policy_mode == "controlled-agent":
+        checks += (
+            (
+                "battle_plan_coverage",
+                float(metrics.get("battle_plan_coverage", 0.0)),
+                ">=",
+                thresholds["min_battle_plan_coverage"],
+            ),
+            (
+                "prediction_coverage",
+                float(metrics.get("prediction_coverage", 0.0)),
+                ">=",
+                thresholds["min_prediction_coverage"],
+            ),
+            (
+                "planner_error_rate",
+                float(metrics.get("planner_error_rate", 0.0)),
+                "<=",
+                thresholds["max_planner_error_rate"],
+            ),
+            (
+                "enrichment_error_rate",
+                float(metrics.get("enrichment_error_rate", 0.0)),
+                "<=",
+                thresholds["max_enrichment_error_rate"],
             ),
         )
     violations = []
@@ -813,6 +960,23 @@ def render_evaluation_markdown(report: dict[str, Any]) -> str:
                 f"{overall.get('tactical_tool_coverage', 0.0):.2%}"
             ),
             (
+                "- Battle-plan coverage: "
+                f"{overall.get('battle_plan_coverage', 0.0):.2%}"
+            ),
+            (
+                "- Replan rate: "
+                f"{overall.get('replan_rate', 0.0):.2%}"
+            ),
+            (
+                "- Enrichment error rate: "
+                f"{overall.get('enrichment_error_rate', 0.0):.2%}"
+            ),
+            (
+                "- Opponent-prediction accuracy: "
+                f"{overall.get('prediction_accuracy', 0.0):.2%} "
+                f"({overall.get('prediction_resolutions', 0)} resolved)"
+            ),
+            (
                 "- Average model calls / decision: "
                 f"{overall.get('average_model_calls_per_decision', 0.0):.2f}"
             ),
@@ -823,8 +987,8 @@ def render_evaluation_markdown(report: dict[str, Any]) -> str:
                 f"{report['cost_accounting']['evaluation_total_tokens']}"
             ),
             (
-                "- Average model latency / decision: "
-                f"{overall['average_decision_latency_seconds']:.2f}s"
+                "- Average Agent latency / decision: "
+                f"{overall.get('average_agent_latency_seconds', overall['average_decision_latency_seconds']):.2f}s"
             ),
         ]
     )

@@ -11,11 +11,13 @@ The project currently has these completed foundations:
 4. give a Policy-first agent a whitelist-only battle snapshot and legal actions;
 5. force one native `choose_battle_action` tool call with a short public reason;
 6. validate the tool arguments, allow one repair, and fall back safely;
-7. record every visible snapshot, tool call, action, and fallback in JSONL.
+7. maintain single-battle memory, evidence-backed opponent beliefs, automatic
+   tactical estimates, and an event-triggered battle plan;
+8. record every visible snapshot, plan, tool call, action, and fallback in JSONL.
 
 The current version also supports a real OpenAI-compatible model endpoint.
-The tactical calculator stays separate from belief tracking and planning so
-each capability can be measured independently.
+The older `direct` and `tactical-tool` modes remain available as experimental
+controls. The research architecture is the `controlled-agent` mode.
 
 ## Requirements
 
@@ -137,9 +139,55 @@ required public sentence capped at 240 characters, not private chain-of-thought.
 The program validates every argument again before resolving the ID into a real
 `poke-env` battle order.
 
+### Run the controlled Agent
+
+This is the main research architecture:
+
+```text
+public Showdown events
+  -> one-battle memory
+  -> evidence-backed opponent hypotheses
+  -> automatic tactical calculator
+  -> update the battle plan only after important events
+  -> choose one legal action
+  -> validate, execute, and record
+```
+
+Run it locally with the deterministic model boundary:
+
+```bash
+uv run showdown-mind agent-smoke \
+  --policy-mode controlled-agent \
+  --opponent max-base-power \
+  --battles 1
+```
+
+Or use the configured live model:
+
+```bash
+uv run --env-file .env showdown-mind llm-smoke \
+  --policy-mode controlled-agent \
+  --opponent simple-heuristics \
+  --battles 1
+```
+
+The tactical calculator runs inside Python every decision; the LLM does not
+choose whether to invoke it. Only two native model tools exist:
+
+- `update_battle_plan`, called on the first decision or after a meaningful
+  change such as a faint, Tera, important belief change, or requested replan;
+- `choose_battle_action`, called on every decision with a legal action ID,
+  confidence, short reason, next-opponent-action prediction, and replan flag.
+
+A normal turn therefore makes one model call. A turn that needs a new plan
+makes one Planner call followed by one action call. If the Planner fails, the
+Agent keeps the previous plan or installs a neutral plan and still chooses a
+legal action. Memory lasts for one battle only; there is no vector database,
+cross-battle memory, open-ended ReAct loop, or web search.
+
 ### Use the tactical calculator tool
 
-The `tactical-tool` policy runs a bounded two-stage native tool workflow:
+The older `tactical-tool` policy runs a bounded two-stage native tool workflow:
 
 ```text
 analyze_battle_options()
@@ -172,8 +220,8 @@ uv run --env-file .env showdown-mind llm-smoke \
   --battles 1
 ```
 
-`direct` remains the default so earlier experiments stay reproducible. A
-tactical candidate evaluation must select the mode explicitly.
+`direct` remains the CLI default so earlier experiments stay reproducible.
+Research runs should select `controlled-agent` explicitly.
 
 For the official DeepSeek V4 API, use:
 
@@ -237,44 +285,50 @@ Showdown, creating files, or calling the model:
 
 ```bash
 uv run showdown-mind evaluate \
-  --name tactical-tool-v1 \
-  --output-dir .runtime/evaluations/tactical-tool-v1 \
-  --policy-mode tactical-tool
+  --name controlled-agent-v1 \
+  --output-dir .runtime/evaluations/controlled-agent-v1 \
+  --policy-mode controlled-agent
 ```
 
-The default matrix is 30 live battles: ten against each built-in opponent.
 Exact token cost depends on battle length and is not known in advance. Add
 `--run` only after reviewing the printed plan:
 
 ```bash
 uv run --env-file .env showdown-mind evaluate \
-  --name tactical-tool-v1 \
-  --output-dir .runtime/evaluations/tactical-tool-v1 \
-  --policy-mode tactical-tool \
+  --name controlled-agent-v1 \
+  --output-dir .runtime/evaluations/controlled-agent-v1 \
+  --policy-mode controlled-agent \
   --run
 ```
 
+The default matrix is 20 live battles: ten against `max-base-power` and ten
+against `simple-heuristics`. Random is still available explicitly as a debug
+opponent, but is not informative enough for the default research comparison.
 For a cheap pipeline check, add `--battles-per-opponent 1`. A real comparison
 should contain at least 20 battles per version.
 
 The evaluation directory contains every underlying run plus `report.json` and
 `report.md`. Reports aggregate win/score rates and Wilson intervals by
 opponent, retries, fallbacks, decision errors, tool-call and rationale
-coverage, confidence, tokens, and model latency.
+coverage, confidence, tokens, and model latency. Controlled-Agent reports also
+include plan coverage, replan frequency, Planner cost and errors, enrichment
+errors, and opponent-prediction coverage and accuracy.
 
 Research validity is stricter than merely finishing battles. Reports require
 fallback rate ≤5%, decision-error rate ≤10%, and tool-call/rationale coverage
-≥95% before `compare` accepts them. A severe per-run quality failure stops the
-remaining live matrix early to protect API cost while preserving an incomplete
-diagnostic report.
+≥95% before `compare` accepts them. Controlled-Agent reports additionally
+require ≥95% plan/prediction coverage, ≤10% Planner-error rate, and ≤5%
+enrichment-error rate. A severe per-run quality failure stops the remaining
+live matrix early to protect API cost while preserving an incomplete diagnostic
+report.
 
 Compare a completed candidate against a completed baseline:
 
 ```bash
 uv run showdown-mind compare \
-  .runtime/evaluations/direct-v0/report.json \
-  .runtime/evaluations/damage-tool-v1/report.json \
-  --output .runtime/evaluations/damage-vs-direct.json
+  .runtime/evaluations/tactical-tool-v1/report.json \
+  .runtime/evaluations/controlled-agent-v1/report.json \
+  --output .runtime/evaluations/controlled-vs-tactical.json
 ```
 
 The comparison uses a reproducible stratified bootstrap and reports
@@ -295,7 +349,9 @@ The command finds the matching `poke-env` replay by battle ID, creates a sibling
 `.viewer.html` file, and opens it in the default browser. The left side uses the
 native Pokémon Showdown animated replay. The right side explains the Agent's
 visible state, legal actions, selected action, public rationale, retries,
-fallbacks, latency, and token usage.
+fallbacks, latency, and token usage. Controlled-Agent records add an
+**Agent 状态** tab for the current battle plan, opponent prediction and previous
+prediction result, evidence-backed beliefs, and newly remembered events.
 
 The Agent timeline follows the native replay automatically, including play,
 pause, reset, previous turn, next turn, and go-to-turn. If one turn contains a
@@ -347,3 +403,5 @@ The model action boundary is described in the
 [native action tool design](docs/plans/2026-07-24-native-action-tool-design.md).
 The experiment matrix and comparison rules are described in the
 [evaluation system design](docs/plans/2026-07-24-agent-evaluation-system-design.md).
+The current research architecture is specified in the
+[controlled Agent design](docs/plans/2026-07-27-controlled-agent-architecture-design.md).

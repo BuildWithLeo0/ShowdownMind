@@ -71,6 +71,20 @@ class ResearchPlayer(Player):
         policy_input_hash = ""
         policy_input_characters = 0
         policy_input: dict[str, Any] = {}
+        opponent_prediction: dict[str, Any] = {}
+        request_replan = False
+        new_events: tuple[dict[str, Any], ...] = ()
+        memory: dict[str, Any] = {}
+        belief_state: dict[str, Any] = {}
+        belief_changes: tuple[dict[str, Any], ...] = ()
+        battle_plan: dict[str, Any] = {}
+        plan_update: dict[str, Any] = {}
+        plan_trigger = ""
+        planner_model_calls = 0
+        planner_usages: tuple[TokenUsage, ...] = ()
+        planner_errors: tuple[str, ...] = ()
+        planner_elapsed_seconds = 0.0
+        enrichment_errors: tuple[str, ...] = ()
 
         try:
             result = await self._policy.decide(
@@ -99,6 +113,20 @@ class ResearchPlayer(Player):
             policy_input_hash = result.policy_input_hash
             policy_input_characters = result.policy_input_characters
             policy_input = result.policy_input
+            opponent_prediction = result.decision.opponent_prediction
+            request_replan = result.decision.request_replan
+            new_events = result.new_events
+            memory = result.memory
+            belief_state = result.belief_state
+            belief_changes = result.belief_changes
+            battle_plan = result.battle_plan
+            plan_update = result.plan_update
+            plan_trigger = result.plan_trigger
+            planner_model_calls = result.planner_model_calls
+            planner_usages = result.planner_usages
+            planner_errors = result.planner_errors
+            planner_elapsed_seconds = result.planner_elapsed_seconds
+            enrichment_errors = result.enrichment_errors
         except PolicyFailure as exc:
             fallback_used = True
             errors = exc.errors
@@ -118,6 +146,18 @@ class ResearchPlayer(Player):
             policy_input_hash = exc.policy_input.fingerprint()
             policy_input_characters = exc.policy_input.characters
             policy_input = exc.policy_input.payload
+            new_events = exc.new_events
+            memory = exc.memory
+            belief_state = exc.belief_state
+            belief_changes = exc.belief_changes
+            battle_plan = exc.battle_plan
+            plan_update = exc.plan_update
+            plan_trigger = exc.plan_trigger
+            planner_model_calls = exc.planner_model_calls
+            planner_usages = exc.planner_usages
+            planner_errors = exc.planner_errors
+            planner_elapsed_seconds = exc.planner_elapsed_seconds
+            enrichment_errors = exc.enrichment_errors
             action_id = deterministic_fallback_action_id(
                 seed=self._fallback_seed,
                 battle_id=snapshot.battle_id,
@@ -156,6 +196,20 @@ class ResearchPlayer(Player):
             reason_codes=reason_codes,
             short_rationale=short_rationale,
             elapsed_seconds=elapsed_seconds,
+            opponent_prediction=opponent_prediction,
+            request_replan=request_replan,
+            new_events=new_events,
+            memory=memory,
+            belief_state=belief_state,
+            belief_changes=belief_changes,
+            battle_plan=battle_plan,
+            plan_update=plan_update,
+            plan_trigger=plan_trigger,
+            planner_model_calls=planner_model_calls,
+            planner_usages=planner_usages,
+            planner_errors=planner_errors,
+            planner_elapsed_seconds=planner_elapsed_seconds,
+            enrichment_errors=enrichment_errors,
         )
         self.decision_records.append(record)
         if self._decision_sink is not None:
@@ -163,6 +217,17 @@ class ResearchPlayer(Player):
         order = catalog.resolve(action_id)
         self._request_cache[request_key] = order
         return order
+
+    def _battle_finished_callback(self, battle: Any) -> None:
+        battle_id = str(battle.battle_tag)
+        self._request_cache = {
+            key: order
+            for key, order in self._request_cache.items()
+            if key[0] != battle_id
+        }
+        forget = getattr(self._policy, "forget_battle", None)
+        if callable(forget):
+            forget(battle_id)
 
 
 def deterministic_fallback_action_id(

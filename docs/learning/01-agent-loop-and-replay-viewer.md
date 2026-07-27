@@ -30,7 +30,8 @@ program define what is possible, then let the model choose.
 
 ## 3. Decide and validate
 
-`policy.py` compiles a model input and exposes one forced native tool:
+`policy.py` compiles a model input and exposes one forced native tool in the
+basic `direct` mode:
 
 ```text
 choose_battle_action(
@@ -55,6 +56,13 @@ The viewer's **决策** tab shows the accepted choice and public short rationale
 The **执行记录** tab shows attempts, validation errors, fallback use, latency,
 token usage, and the provider's tool-call ID. It does not claim to reveal
 private chain-of-thought.
+
+In `controlled-agent`, Python first updates `BattleMemory`, rebuilds
+evidence-backed opponent beliefs, and automatically runs the tactical
+calculator. `update_battle_plan` is called only after an important event;
+`choose_battle_action` is still the single final action boundary. The viewer's
+**Agent 状态** tab makes this extra loop visible without exposing private
+chain-of-thought.
 
 ## 4. Act and record
 

@@ -166,6 +166,57 @@ def test_summarizes_reliability_cost_and_coverage(tmp_path) -> None:
     assert metrics["rationale_decisions"] == 2
 
 
+def test_summarizes_controlled_agent_planning_and_predictions(tmp_path) -> None:
+    path = tmp_path / "controlled.jsonl"
+    first = {
+        **decision_record(),
+        "battle_plan": {"schema": "battle-plan-v1"},
+        "plan_trigger": "initial",
+        "planner_model_calls": 1,
+        "planner_errors": [],
+        "planner_elapsed_seconds": 0.4,
+        "planner_usages": [
+            {"input_tokens": 8, "output_tokens": 4, "total_tokens": 12}
+        ],
+        "opponent_prediction": {
+            "kind": "attack",
+            "detail": "waterfall",
+            "confidence": 0.7,
+        },
+        "memory": {},
+        "tool_executions": [
+            {"tool_name": "analyze_battle_options", "execution_kind": "internal"}
+        ],
+    }
+    second = {
+        **first,
+        "plan_trigger": "",
+        "planner_model_calls": 0,
+        "planner_elapsed_seconds": 0,
+        "planner_usages": [],
+        "memory": {
+            "previous_prediction_resolution": {
+                "predicted": {"decision_turn": 1},
+                "actual_kind": "attack",
+                "observed_turn": 1,
+                "matched": True,
+                "evidence_event_id": "event-2",
+            }
+        },
+    }
+    write_decisions(path, [first, second])
+
+    metrics = summarize_decision_log(path)
+
+    assert metrics["battle_plan_decisions"] == 2
+    assert metrics["replan_decisions"] == 1
+    assert metrics["planner_model_calls"] == 1
+    assert metrics["planner_total_tokens"] == 12
+    assert metrics["prediction_resolutions"] == 1
+    assert metrics["prediction_matches"] == 1
+    assert metrics["tactical_tool_decisions"] == 2
+
+
 def test_aggregate_runs_includes_outcomes_and_rates() -> None:
     metrics = aggregate_runs([run_entry("random", ["win", "loss", "draw", "win"])])
 
@@ -390,6 +441,32 @@ def test_tactical_quality_requires_executed_calculator_tool() -> None:
     assert quality["status"] == "invalid"
     assert any(
         "tactical_tool_coverage" in violation
+        for violation in quality["violations"]
+    )
+
+
+def test_controlled_agent_quality_requires_automatic_calculator() -> None:
+    metrics = aggregate_runs([run_entry("random", ["win"] * 3)])
+    metrics["tactical_tool_coverage"] = 0.5
+
+    quality = assess_quality(metrics, policy_mode="controlled-agent")
+
+    assert quality["status"] == "invalid"
+
+
+def test_controlled_agent_quality_requires_plan_and_prediction_coverage() -> None:
+    metrics = aggregate_runs([run_entry("random", ["win"] * 3)])
+    metrics["tactical_tool_coverage"] = 1.0
+
+    quality = assess_quality(metrics, policy_mode="controlled-agent")
+
+    assert quality["status"] == "invalid"
+    assert any(
+        "battle_plan_coverage" in violation
+        for violation in quality["violations"]
+    )
+    assert any(
+        "prediction_coverage" in violation
         for violation in quality["violations"]
     )
 

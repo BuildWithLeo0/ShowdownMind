@@ -1,3 +1,4 @@
+import json
 import os
 
 import pytest
@@ -49,14 +50,56 @@ async def test_policy_agent_finishes_and_logs_a_local_battle(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_controlled_agent_finishes_with_memory_plan_and_tactics(tmp_path) -> None:
+    decision_log = tmp_path / "controlled.jsonl"
+    with managed_showdown_server():
+        result = await run_agent_battles(
+            DeterministicModelClient(),
+            opponent_name="max-base-power",
+            battles=1,
+            decision_log=decision_log,
+            timeout_seconds=90,
+            policy_mode="controlled-agent",
+        )
+
+    records = [
+        json.loads(line)
+        for line in decision_log.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    manifest = json.loads(
+        (tmp_path / "controlled.manifest.json").read_text(encoding="utf-8")
+    )
+
+    assert result.finished_battles == 1
+    assert result.fallbacks == 0
+    assert records
+    assert records[0]["plan_trigger"] == "initial"
+    assert all(record["battle_plan"] for record in records)
+    assert all(record["opponent_prediction"] for record in records)
+    assert all(
+        any(
+            execution["tool_name"] == "analyze_battle_options"
+            and execution["execution_kind"] == "internal"
+            for execution in record["tool_executions"]
+        )
+        for record in records
+    )
+    assert manifest["policy"]["architecture"]["kind"] == (
+        "hierarchical-controlled-agent-v1"
+    )
+
+
+@pytest.mark.asyncio
 async def test_evaluation_finishes_and_writes_aggregate_report(tmp_path) -> None:
     output = tmp_path / "evaluation"
     plan = EvaluationPlan(
         name="deterministic-integration",
         output_dir=output,
-        opponents=("random",),
+        opponents=("max-base-power",),
         battles_per_opponent=1,
         run_timeout_seconds=60,
+        policy_mode="controlled-agent",
     )
     with managed_showdown_server():
         report = await run_evaluation(DeterministicModelClient(), plan)
@@ -64,5 +107,8 @@ async def test_evaluation_finishes_and_writes_aggregate_report(tmp_path) -> None
     assert report["status"] == "complete"
     assert report["overall"]["battles"] == 1
     assert report["overall"]["fallbacks"] == 0
+    assert report["overall"]["battle_plan_coverage"] == 1.0
+    assert report["overall"]["prediction_coverage"] == 1.0
+    assert report["overall"]["tactical_tool_coverage"] == 1.0
     assert (output / "report.json").is_file()
     assert (output / "report.md").is_file()

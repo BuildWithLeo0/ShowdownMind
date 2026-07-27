@@ -77,6 +77,8 @@ class PolicyDecision:
     confidence: float | None = None
     reason_codes: tuple[str, ...] = ()
     short_rationale: str = ""
+    opponent_prediction: dict[str, Any] = field(default_factory=dict)
+    request_replan: bool = False
 
 
 @dataclass(frozen=True)
@@ -106,6 +108,18 @@ class PolicyResult:
     tool_names: tuple[str, ...] = ()
     tool_executions: tuple[dict[str, Any], ...] = ()
     tactical_analysis: dict[str, Any] = field(default_factory=dict)
+    new_events: tuple[dict[str, Any], ...] = ()
+    memory: dict[str, Any] = field(default_factory=dict)
+    belief_state: dict[str, Any] = field(default_factory=dict)
+    belief_changes: tuple[dict[str, Any], ...] = ()
+    battle_plan: dict[str, Any] = field(default_factory=dict)
+    plan_update: dict[str, Any] = field(default_factory=dict)
+    plan_trigger: str = ""
+    planner_model_calls: int = 0
+    planner_usages: tuple[TokenUsage, ...] = ()
+    planner_errors: tuple[str, ...] = ()
+    planner_elapsed_seconds: float = 0.0
+    enrichment_errors: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -138,6 +152,20 @@ class DecisionRecord:
     reason_codes: tuple[str, ...] = ()
     short_rationale: str = ""
     elapsed_seconds: float = 0.0
+    opponent_prediction: dict[str, Any] = field(default_factory=dict)
+    request_replan: bool = False
+    new_events: tuple[dict[str, Any], ...] = ()
+    memory: dict[str, Any] = field(default_factory=dict)
+    belief_state: dict[str, Any] = field(default_factory=dict)
+    belief_changes: tuple[dict[str, Any], ...] = ()
+    battle_plan: dict[str, Any] = field(default_factory=dict)
+    plan_update: dict[str, Any] = field(default_factory=dict)
+    plan_trigger: str = ""
+    planner_model_calls: int = 0
+    planner_usages: tuple[TokenUsage, ...] = ()
+    planner_errors: tuple[str, ...] = ()
+    planner_elapsed_seconds: float = 0.0
+    enrichment_errors: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

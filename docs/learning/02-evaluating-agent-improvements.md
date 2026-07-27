@@ -16,9 +16,10 @@ uv run --env-file .env showdown-mind evaluate \
 This command is a dry run. Read the matrix and total battle count first. Add
 `--run` only when the plan and expected API usage are acceptable.
 
-The default matrix contains 30 battles: ten against each of random,
-max-base-power, and simple-heuristics. For a cheap end-to-end check, explicitly
-request fewer battles:
+The default matrix contains 20 battles: ten against max-base-power and ten
+against simple-heuristics. Random remains available for debugging but is too
+weak to be a useful default research opponent. For a cheap end-to-end check,
+explicitly request fewer battles:
 
 ```bash
 uv run --env-file .env showdown-mind evaluate \
@@ -78,6 +79,11 @@ Win rate is not the only concern. The comparison also shows changes in:
 - native tool-call and rationale coverage;
 - tokens per battle and per decision;
 - average model latency per decision.
+
+For `controlled-agent`, also compare plan coverage, replan frequency, Planner
+cost and errors, enrichment failures, and opponent-prediction accuracy. These
+diagnostics help distinguish a genuinely better architecture from one that
+merely spent more tokens or replanned more often.
 
 A candidate that wins slightly more but doubles cost or becomes unreliable may
 not be the better engineering choice.

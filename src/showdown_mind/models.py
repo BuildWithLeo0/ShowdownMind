@@ -8,6 +8,7 @@ from typing import Any, Protocol
 from urllib.parse import urlparse
 
 from openai import AsyncOpenAI
+from poke_env.data import to_id_str
 
 from showdown_mind.domain import TokenUsage
 
@@ -19,6 +20,7 @@ MODEL_ENV = "SHOWDOWN_MIND_MODEL"
 THINKING_ENV = "SHOWDOWN_MIND_THINKING"
 ACTION_TOOL_NAME = "choose_battle_action"
 TACTICAL_TOOL_NAME = "analyze_battle_options"
+PLAN_TOOL_NAME = "update_battle_plan"
 
 
 @dataclass(frozen=True)
@@ -89,13 +91,55 @@ class DeterministicModelClient:
 
     async def complete(self, request: ModelRequest) -> ModelResponse:
         payload = json.loads(request.user_prompt)
+        if request.tool.name == PLAN_TOOL_NAME:
+            battle = payload.get("battle") or payload.get(
+                "planner_context",
+                {},
+            ).get("battle", {})
+            own = battle.get("own_side") or battle.get("own") or {}
+            opponent = battle.get("opponent_side") or battle.get("opponent") or {}
+            own_team = own.get("team", [])
+            opponent_team = opponent.get("revealed_team") or opponent.get("team", [])
+            preserve = [
+                to_id_str(str(pokemon.get("species") or ""))
+                for pokemon in own_team
+                if isinstance(pokemon, dict)
+                and pokemon.get("species")
+                and not pokemon.get("fainted")
+            ][:1]
+            targets = [
+                to_id_str(str(pokemon.get("species") or ""))
+                for pokemon in opponent_team
+                if isinstance(pokemon, dict)
+                and pokemon.get("species")
+                and not pokemon.get("fainted")
+            ][:1]
+            return ModelResponse(
+                json.dumps(
+                    {
+                        "win_condition": "Preserve options and improve the matchup.",
+                        "preserve": preserve,
+                        "priority_targets": targets,
+                        "tera_policy": "Hold Tera unless it prevents an immediate loss.",
+                        "risk_posture": "balanced",
+                        "replan_triggers": [
+                            "preserve_fainted",
+                            "target_fainted",
+                            "opponent_tera",
+                        ],
+                    }
+                ),
+                self.model_id,
+                tool_call_id="deterministic-plan-tool-call",
+            )
         if request.tool.name == TACTICAL_TOOL_NAME:
             return ModelResponse(
                 "{}",
                 self.model_id,
                 tool_call_id="deterministic-tactical-tool-call",
             )
-        actions = payload["legal_actions"]
+        battle = payload.get("battle", payload)
+        actions = battle["legal_actions"]
         moves = [action for action in actions if action["kind"] == "move"]
         selected = max(
             moves or actions,
@@ -104,14 +148,27 @@ class DeterministicModelClient:
                 action.get("details", {}).get("base_power", 0),
             ),
         )
-        content = json.dumps(
-            {
-                "action_id": selected["action_id"],
-                "confidence": 1.0,
-                "reason_codes": ["DAMAGE"],
-                "short_rationale": "Choose the legal move with the highest base power.",
-            }
-        )
+        decision = {
+            "action_id": selected["action_id"],
+            "confidence": 1.0,
+            "reason_codes": ["DAMAGE"],
+            "short_rationale": "Choose the legal move with the highest base power.",
+        }
+        if "opponent_prediction" in request.tool.parameters.get(
+            "properties",
+            {},
+        ):
+            decision.update(
+                {
+                    "opponent_prediction": {
+                        "kind": "unknown",
+                        "detail": "",
+                        "confidence": 0.0,
+                    },
+                    "request_replan": False,
+                }
+            )
+        content = json.dumps(decision)
         return ModelResponse(
             content,
             self.model_id,

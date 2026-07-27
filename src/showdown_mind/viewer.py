@@ -209,6 +209,25 @@ def _viewer_decision(record: dict[str, Any], index: int) -> dict[str, Any]:
     tactical_analysis = record.get("tactical_analysis", {})
     if not isinstance(tactical_analysis, dict):
         tactical_analysis = {}
+    planner_usages = record.get("planner_usages", [])
+    if not isinstance(planner_usages, list):
+        planner_usages = []
+    valid_planner_usages = [
+        usage for usage in planner_usages if isinstance(usage, dict)
+    ]
+    controlled_fields = {}
+    for key, default in (
+        ("memory", {}),
+        ("belief_state", {}),
+        ("battle_plan", {}),
+        ("plan_update", {}),
+        ("opponent_prediction", {}),
+    ):
+        value = record.get(key, default)
+        controlled_fields[key] = value if isinstance(value, dict) else default
+    for key in ("new_events", "belief_changes"):
+        value = record.get(key, [])
+        controlled_fields[key] = value if isinstance(value, list) else []
     return {
         "sequence": index,
         "turn": int(record.get("turn", snapshot.get("turn", 0))),
@@ -238,6 +257,9 @@ def _viewer_decision(record: dict[str, Any], index: int) -> dict[str, Any]:
                 {
                     "tool_name": str(execution.get("tool_name") or ""),
                     "tool_call_id": str(execution.get("tool_call_id") or ""),
+                    "execution_kind": str(
+                        execution.get("execution_kind") or "model_tool_call"
+                    ),
                     "arguments": execution.get("arguments", {}),
                 }
                 for execution in tool_executions
@@ -245,6 +267,37 @@ def _viewer_decision(record: dict[str, Any], index: int) -> dict[str, Any]:
             ],
         },
         "tactical_analysis": tactical_analysis,
+        **controlled_fields,
+        "plan_trigger": str(record.get("plan_trigger") or ""),
+        "request_replan": bool(record.get("request_replan", False)),
+        "enrichment_errors": [
+            redact_secrets(str(error))
+            for error in record.get("enrichment_errors") or []
+        ],
+        "planner": {
+            "model_calls": int(record.get("planner_model_calls", 0)),
+            "elapsed_seconds": float(
+                record.get("planner_elapsed_seconds", 0.0)
+            ),
+            "errors": [
+                redact_secrets(str(error))
+                for error in record.get("planner_errors") or []
+            ],
+            "usage": {
+                "input_tokens": sum(
+                    int(usage.get("input_tokens", 0))
+                    for usage in valid_planner_usages
+                ),
+                "output_tokens": sum(
+                    int(usage.get("output_tokens", 0))
+                    for usage in valid_planner_usages
+                ),
+                "total_tokens": sum(
+                    int(usage.get("total_tokens", 0))
+                    for usage in valid_planner_usages
+                ),
+            },
+        },
         "usage": {
             "input_tokens": sum(
                 int(usage.get("input_tokens", 0)) for usage in valid_usages

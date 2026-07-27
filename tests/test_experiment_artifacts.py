@@ -48,6 +48,28 @@ def test_manifest_sanitizes_provider_url_and_excludes_credentials(tmp_path) -> N
     assert "secret" not in encoded
 
 
+def test_controlled_agent_manifest_records_architecture(tmp_path) -> None:
+    writer = ExperimentArtifactWriter(tmp_path / "controlled.jsonl")
+    model = SimpleNamespace(model_id="test-model")
+    controlled = ExperimentSpec(
+        battle_format="gen9randombattle",
+        opponent="max-base-power",
+        requested_battles=1,
+        prompt_format="pruned-v1",
+        timeout_seconds=60,
+        policy_mode="controlled-agent",
+    )
+
+    writer.write_manifest(model, controlled)
+
+    manifest = json.loads(writer.paths.manifest.read_text(encoding="utf-8"))
+    architecture = manifest["policy"]["architecture"]
+    assert architecture["kind"] == "hierarchical-controlled-agent-v1"
+    assert architecture["tactical_analysis"] == "automatic-every-turn"
+    assert architecture["planner"] == "event-triggered-battle-plan-v1"
+    assert architecture["search"] is False
+
+
 def test_failure_record_redacts_common_secret_shapes(tmp_path) -> None:
     writer = ExperimentArtifactWriter(tmp_path / "run.jsonl")
 

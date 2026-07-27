@@ -48,6 +48,58 @@ def decision(battle_id: str, *, turn: int = 1) -> dict:
                 }
             ],
         },
+        "new_events": [
+            {
+                "kind": "move",
+                "actor": "opponent:squirtle",
+                "payload": {"move_id": "icebeam"},
+            }
+        ],
+        "memory": {
+            "schema_version": "battle-memory-v1",
+            "previous_prediction_resolution": {
+                "matched": True,
+                "actual_action_class": "attack",
+            },
+        },
+        "belief_state": {
+            "schema_version": "belief-state-v1",
+            "hypotheses": [
+                {
+                    "subject": "Squirtle",
+                    "kind": "move",
+                    "value": "icebeam",
+                    "confidence": "likely",
+                    "evidence_ids": ["revealed"],
+                }
+            ],
+        },
+        "belief_changes": [],
+        "battle_plan": {
+            "schema": "battle-plan-v1",
+            "version": 1,
+            "created_turn": 1,
+            "win_condition": "Preserve Pikachu",
+            "preserve": ["Pikachu"],
+            "priority_targets": ["Squirtle"],
+            "tera_policy": "Hold Tera.",
+            "risk_posture": "balanced",
+            "replan_triggers": ["preserve_fainted"],
+        },
+        "plan_update": {},
+        "plan_trigger": "initial",
+        "planner_model_calls": 1,
+        "planner_elapsed_seconds": 0.25,
+        "planner_errors": [],
+        "planner_usages": [
+            {"input_tokens": 8, "output_tokens": 4, "total_tokens": 12}
+        ],
+        "opponent_prediction": {
+            "kind": "attack",
+            "detail": "waterfall",
+            "confidence": 0.7,
+        },
+        "request_replan": False,
         "raw_responses": ["raw-response-must-not-be-embedded"],
         "policy_input": {"private-shape": "must-not-be-embedded"},
         "policy_input_format": "pruned-v1",
@@ -184,7 +236,16 @@ def test_builds_single_file_viewer_with_sanitized_decisions(tmp_path) -> None:
     assert payload["decisions"][0]["tactical_analysis"]["schema"] == (
         "tactical-analysis-v1"
     )
+    assert payload["decisions"][0]["battle_plan"]["win_condition"] == (
+        "Preserve Pikachu"
+    )
+    assert payload["decisions"][0]["belief_state"]["hypotheses"][0]["value"] == (
+        "icebeam"
+    )
+    assert payload["decisions"][0]["planner"]["model_calls"] == 1
+    assert payload["decisions"][0]["planner"]["usage"]["total_tokens"] == 12
     assert "NATIVE TOOL CALL" in html
+    assert "Agent 状态" in html
     assert "choose_battle_action" in encoded_payload
     assert "raw-response-must-not-be-embedded" not in encoded_payload
     assert "private-shape" not in encoded_payload

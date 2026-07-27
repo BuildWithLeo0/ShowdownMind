@@ -126,8 +126,10 @@ fabricated numeric probabilities. Candidate roles, moves, abilities, and Tera
 types come from the public Gen 9 Random Battle set data at the pinned Showdown
 commit. Revealed facts filter incompatible candidates. Items are treated as
 unknown until public evidence exists because the static set file does not fully
-encode item selection. Each model view includes at most three hypotheses per
-kind and revealed opponent.
+encode item selection. Each subject/kind contributes at most three hypotheses,
+the active opponent is prioritized, and the complete model view is capped at
+sixteen hypotheses. Repeated evidence lists keep the public prior plus the two
+newest event IDs.
 
 Belief v1 may record speed and damage evidence, but only promotes conclusions
 supported by deterministic rules. Ambiguous evidence remains possible rather
@@ -153,12 +155,15 @@ The single-battle plan returned by `update_battle_plan`:
 
 Text fields are public summaries, not chain-of-thought. Species references must
 exist in the player-visible teams. `risk_posture` is `conservative`,
-`balanced`, or `aggressive`.
+`balanced`, or `aggressive`. The controller automatically adds
+`preserve_fainted` and `target_fainted` whenever the corresponding plan lists
+are non-empty, so a model cannot disable basic plan invalidation.
 
-The controller triggers planning on the first decision, any faint, either
-side's Tera, a newly revealed item or ability that changes a likely belief, the
-loss of a preserved ally, the removal of a priority target, or a Policy request
-from the previous turn. Repeated requests in the same turn never replan.
+The controller triggers planning on the first decision, the loss of a preserved
+ally, the removal of a priority target, either side's Tera when configured, a
+newly revealed item or ability that changes a likely belief when configured, or
+a Policy request from the previous turn. An unrelated faint does not invalidate
+the plan. Repeated requests in the same turn never replan.
 
 If planning fails, the old plan remains active. If no plan exists, a deterministic
 neutral plan preserves no named Pokémon, identifies no target, uses balanced
@@ -256,11 +261,12 @@ variable.
 - planner calls, tokens, latency, and errors separately from Policy metrics;
 - the automatically executed tactical analysis.
 
-The replay viewer adds Memory, Beliefs, and Plan panels. For each synchronized
-turn it shows which facts arrived, why hypotheses changed, whether planning ran,
-the current win condition and preserved resources, the prediction from the
-previous decision versus the observed action, and the final action rationale.
-Older logs remain viewable with empty panels.
+The replay viewer adds an Agent State panel with Memory, Beliefs, Plan, and
+Prediction sections. For each synchronized turn it shows which facts arrived,
+why hypotheses changed, whether planning ran, the current win condition and
+preserved resources, the prediction from the previous decision versus the
+observed action, and the final action rationale. Older logs remain viewable
+with empty sections.
 
 Experiment manifests record the controlled capability set, schema versions,
 prior source, pinned Showdown commit, model, prompt version, and planning

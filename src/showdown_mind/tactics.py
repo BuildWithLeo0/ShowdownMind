@@ -32,7 +32,13 @@ HAZARD_REMOVAL = {
 class TacticalAdvisor:
     """Calculate player-visible tactical facts for the current legal actions."""
 
-    def analyze(self, battle: Any, catalog: ActionCatalog) -> dict[str, Any]:
+    def analyze(
+        self,
+        battle: Any,
+        catalog: ActionCatalog,
+        *,
+        opponent_candidate_move_ids: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
         active = getattr(battle, "active_pokemon", None)
         opponent = getattr(battle, "opponent_active_pokemon", None)
         own_conditions = getattr(battle, "side_conditions", None) or {}
@@ -74,6 +80,7 @@ class TacticalAdvisor:
                         fields,
                         weather,
                         battle_gen,
+                        opponent_candidate_move_ids,
                     )
                 )
             elif isinstance(order, SingleBattleOrder) and isinstance(
@@ -90,6 +97,7 @@ class TacticalAdvisor:
                         weather,
                         trick_room,
                         battle_gen,
+                        opponent_candidate_move_ids,
                     )
                 )
             else:
@@ -212,6 +220,9 @@ class TacticalAdvisor:
                 and float(action["matchup_score"]) == best_switch_score
             ],
             "actions": actions,
+            "opponent_candidate_move_ids": list(
+                opponent_candidate_move_ids[:8]
+            ),
             "limitations": (
                 "Damage ranges and KO probabilities are approximations based on "
                 "public species, level, types, boosts, move data, and HP. They "
@@ -220,8 +231,10 @@ class TacticalAdvisor:
                 "critical hits, and unmodeled special effects are omitted. "
                 "Weather, terrain, burn, screens, and entry hazards are included "
                 "when visible. Supported variable-power moves are estimated; "
-                "unknown dynamic moves remain unranked. Counterplay uses only "
-                "revealed opponent moves. Defensive Tera compares only the "
+                "unknown dynamic moves remain unranked. Counterplay uses revealed "
+                "opponent moves plus any supplied public Random Battle move "
+                "candidates; candidates are hypotheses, not hidden facts. "
+                "Defensive Tera compares only the "
                 "opponent's currently visible STAB types, not unrevealed moves."
             ),
         }
@@ -238,6 +251,7 @@ class TacticalAdvisor:
         fields: dict[Any, Any],
         weather: dict[Any, Any],
         battle_gen: int,
+        opponent_candidate_move_ids: tuple[str, ...],
     ) -> dict[str, Any]:
         move = order.order
         category = _enum_name(getattr(move, "category", None))
@@ -343,6 +357,7 @@ class TacticalAdvisor:
             battle_gen=battle_gen,
             remaining_hp_fraction=self_hp_effect["post_action_hp_fraction"],
             terastallize=bool(order.terastallize),
+            candidate_move_ids=opponent_candidate_move_ids,
         )
         result = {
             "action_id": action_id,
@@ -408,6 +423,7 @@ class TacticalAdvisor:
         weather: dict[Any, Any],
         trick_room: bool,
         battle_gen: int,
+        opponent_candidate_move_ids: tuple[str, ...],
     ) -> dict[str, Any]:
         candidate_types = [
             value for value in (getattr(candidate, "types", None) or []) if value
@@ -462,6 +478,7 @@ class TacticalAdvisor:
             battle_gen=battle_gen,
             remaining_hp_fraction=entry_hazards["post_entry_hp_fraction"],
             terastallize=False,
+            candidate_move_ids=opponent_candidate_move_ids,
         )
         counter_ko_probability = _number(
             counterplay.get("estimated_counter_ko_probability")
@@ -511,6 +528,15 @@ def compact_tactical_analysis_for_model(
             "best_switch_action_ids",
             [],
         ),
+        "opponent_move_information": {
+            "public_candidate_move_ids": analysis.get(
+                "opponent_candidate_move_ids",
+                [],
+            ),
+            "candidate_moves_are_hypotheses": bool(
+                analysis.get("opponent_candidate_move_ids")
+            ),
+        },
         "actions": [
             _compact_tactical_action(action)
             for action in analysis.get("actions", [])
@@ -1047,26 +1073,41 @@ def _counterplay_estimate(
     battle_gen: int,
     remaining_hp_fraction: float | None,
     terastallize: bool,
+    candidate_move_ids: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     revealed_moves = [
         move
         for move in (getattr(attacker, "moves", None) or {}).values()
         if isinstance(move, Move)
     ]
+    revealed_ids = {
+        str(getattr(move, "id", "")) for move in revealed_moves
+    }
+    candidate_moves: list[Move] = []
+    for move_id in candidate_move_ids[:8]:
+        if move_id in revealed_ids:
+            continue
+        try:
+            candidate_moves.append(Move(move_id, gen=battle_gen))
+        except (KeyError, ValueError):
+            continue
+    considered_moves = revealed_moves + candidate_moves
     if remaining_hp_fraction is not None and remaining_hp_fraction <= 0:
         return {
             "available": True,
             "revealed_moves_considered": len(revealed_moves),
+            "candidate_moves_considered": len(candidate_moves),
             "estimated_counter_ko_probability": 1.0,
             "survival_probability": 0.0,
             "risk": "self_ko" if own_move is not None else "entry_hazard_ko",
         }
-    if not revealed_moves:
+    if not considered_moves:
         return {
             "available": False,
             "revealed_moves_considered": 0,
+            "candidate_moves_considered": 0,
             "unscored_move_ids": [],
-            "risk": "unknown_no_revealed_moves",
+            "risk": "unknown_no_candidate_or_revealed_moves",
         }
 
     type_chart = GenData.from_gen(battle_gen).type_chart
@@ -1094,7 +1135,7 @@ def _counterplay_estimate(
     estimates: list[dict[str, Any]] = []
     unscored_move_ids: list[str] = []
 
-    for move in revealed_moves:
+    for move in considered_moves:
         move_id = str(getattr(move, "id", ""))
         category = _enum_name(getattr(move, "category", None))
         effective_power, power_source = _effective_move_power(
@@ -1216,8 +1257,9 @@ def _counterplay_estimate(
         return {
             "available": False,
             "revealed_moves_considered": len(revealed_moves),
+            "candidate_moves_considered": len(candidate_moves),
             "unscored_move_ids": sorted(set(unscored_move_ids)),
-            "risk": "unknown_no_scorable_revealed_damage",
+            "risk": "unknown_no_scorable_candidate_or_revealed_damage",
         }
 
     worst = max(
@@ -1242,8 +1284,13 @@ def _counterplay_estimate(
         risk = "survives_known_reply"
     return {
         "available": True,
-        "basis": "revealed_opponent_moves",
+        "basis": (
+            "revealed_and_public_prior_moves"
+            if candidate_moves
+            else "revealed_opponent_moves"
+        ),
         "revealed_moves_considered": len(revealed_moves),
+        "candidate_moves_considered": len(candidate_moves),
         "scored_moves": len(estimates),
         "unscored_move_ids": sorted(set(unscored_move_ids)),
         "worst_move_id": worst["move_id"],

@@ -77,6 +77,7 @@ class ExperimentArtifactWriter:
             "policy": {
                 "input_format": spec.prompt_format,
                 "mode": spec.policy_mode,
+                "architecture": _policy_architecture(spec.policy_mode),
             },
             "model": {
                 "model_id": str(
@@ -133,6 +134,38 @@ def _sanitize_provider_url(value: Any) -> str | None:
     if parsed.port is not None:
         host = f"{host}:{parsed.port}"
     return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+
+
+def _policy_architecture(policy_mode: str) -> dict[str, Any]:
+    if policy_mode == "controlled-agent":
+        return {
+            "kind": "hierarchical-controlled-agent-v1",
+            "decision_context_schema": "controlled-agent-v1",
+            "battle_memory": "battle-memory-v1",
+            "belief_tracker": "rules-plus-public-random-battle-priors-v1",
+            "public_prior_source": (
+                "pokemon-showdown:gen9randombattle:sets.json"
+            ),
+            "tactical_analysis": "automatic-every-turn",
+            "planner": "event-triggered-battle-plan-v1",
+            "model_tools": [
+                "update_battle_plan",
+                "choose_battle_action",
+            ],
+            "search": False,
+            "cross_battle_memory": False,
+        }
+    return {
+        "kind": f"{policy_mode}-v1",
+        "tactical_analysis": (
+            "model-requested"
+            if policy_mode == "tactical-tool"
+            else "not-integrated"
+        ),
+        "planner": "none",
+        "search": False,
+        "cross_battle_memory": False,
+    }
 
 
 def redact_secrets(value: str) -> str:

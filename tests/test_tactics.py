@@ -153,6 +153,33 @@ def test_advisor_estimates_counterplay_from_revealed_moves_only() -> None:
     assert result["safest_action_ids"] == ["move:protect"]
 
 
+def test_advisor_uses_public_candidate_moves_without_treating_them_as_revealed() -> None:
+    active = healthy_pokemon("Pikachu")
+    opponent = healthy_pokemon("Gyarados")
+
+    result = TacticalAdvisor().analyze(
+        SimpleNamespace(
+            active_pokemon=active,
+            opponent_active_pokemon=opponent,
+        ),
+        ActionCatalog((move_entry("thunderbolt"),)),
+        opponent_candidate_move_ids=("earthquake",),
+    )
+
+    counterplay = result["actions"][0]["counterplay"]
+    compact = compact_tactical_analysis_for_model(result)
+
+    assert result["opponent_candidate_move_ids"] == ["earthquake"]
+    assert counterplay["basis"] == "revealed_and_public_prior_moves"
+    assert counterplay["revealed_moves_considered"] == 0
+    assert counterplay["candidate_moves_considered"] == 1
+    assert counterplay["worst_move_id"] == "earthquake"
+    assert compact["opponent_move_information"] == {
+        "public_candidate_move_ids": ["earthquake"],
+        "candidate_moves_are_hypotheses": True,
+    }
+
+
 def test_advisor_applies_visible_weather_and_screen_modifiers() -> None:
     active = healthy_pokemon("Charizard")
     opponent = healthy_pokemon("Venusaur")

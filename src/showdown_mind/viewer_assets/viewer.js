@@ -422,6 +422,116 @@ const renderState = (decision) => {
   `;
 };
 
+const eventMarkup = (events) => {
+  if (!Array.isArray(events) || !events.length) {
+    return '<div class="empty-copy">本回合没有新的结构化事件。</div>';
+  }
+  return `
+    <div class="agent-list">
+      ${events
+        .map(
+          (event) => `
+            <div class="agent-list-item">
+              <strong>${escapeHtml(titleCase(event.kind || "event"))}</strong>
+              <span>${escapeHtml(event.actor || "")}${event.payload ? ` · ${escapeHtml(formatValue(event.payload))}` : ""}</span>
+            </div>
+          `
+        )
+        .join("")}
+    </div>
+  `;
+};
+
+const beliefsMarkup = (beliefState) => {
+  const hypotheses = beliefState?.hypotheses || [];
+  if (!Array.isArray(hypotheses) || !hypotheses.length) {
+    return '<div class="empty-copy">没有达到展示条件的对手假设。</div>';
+  }
+  return `
+    <div class="belief-grid">
+      ${hypotheses
+        .map(
+          (belief) => `
+            <div class="belief-card">
+              <div>
+                <strong>${escapeHtml(belief.subject || "Opponent")}</strong>
+                <span class="belief-tier is-${escapeHtml(belief.confidence || "possible")}">${escapeHtml((belief.confidence || "possible").toUpperCase())}</span>
+              </div>
+              <p>${escapeHtml(titleCase(belief.kind || "hypothesis"))}: ${escapeHtml(formatValue(belief.value))}</p>
+              <small>${escapeHtml((belief.evidence_ids || []).join(" · ") || "public prior")}</small>
+            </div>
+          `
+        )
+        .join("")}
+    </div>
+  `;
+};
+
+const planMarkup = (decision) => {
+  const plan = decision.battle_plan || {};
+  if (!plan.schema && !plan.win_condition) {
+    return '<div class="empty-copy">这个策略模式没有本局作战计划。</div>';
+  }
+  const updated = Object.keys(decision.plan_update || {}).length > 0;
+  return `
+    <div class="plan-card">
+      <div class="plan-heading">
+        <strong>${escapeHtml(plan.win_condition || "Maintain a playable position")}</strong>
+        <span class="badge ${updated ? "is-signal" : ""}">${updated ? "UPDATED" : "KEPT"}</span>
+      </div>
+      <p>${escapeHtml(plan.tera_policy || "No Tera policy recorded.")}</p>
+      ${keyValuesMarkup({
+        trigger: decision.plan_trigger || "none",
+        version: plan.version,
+        preserve: plan.preserve,
+        priority_targets: plan.priority_targets,
+        risk_posture: plan.risk_posture,
+        replan_triggers: plan.replan_triggers,
+        request_replan: decision.request_replan,
+      })}
+    </div>
+  `;
+};
+
+const predictionMarkup = (decision) => {
+  const current = decision.opponent_prediction || {};
+  const resolution = decision.memory?.previous_prediction_resolution || {};
+  return `
+    <div class="prediction-grid">
+      <div class="plan-card">
+        <small class="metric-label">CURRENT PREDICTION</small>
+        <strong>${escapeHtml(titleCase(current.kind || "none"))}</strong>
+        <p>${escapeHtml(current.detail || "No prediction recorded.")}</p>
+        <small>Confidence: ${typeof current.confidence === "number" ? `${Math.round(current.confidence * 100)}%` : "—"}</small>
+      </div>
+      <div class="plan-card">
+        <small class="metric-label">PREVIOUS RESULT</small>
+        <strong>${resolution.matched === true ? "MATCHED" : resolution.matched === false ? "MISSED" : "PENDING"}</strong>
+        <p>${escapeHtml(resolution.actual_kind ? `Actual: ${titleCase(resolution.actual_kind)} · ${resolution.actual_detail || ""}` : "No prior prediction has resolved.")}</p>
+      </div>
+    </div>
+  `;
+};
+
+const renderAgent = (decision) => `
+  <section class="state-section">
+    <h3 class="subheading">BATTLE PLAN / 本局作战计划</h3>
+    ${planMarkup(decision)}
+  </section>
+  <section class="state-section">
+    <h3 class="subheading">OPPONENT PREDICTION / 对手预测</h3>
+    ${predictionMarkup(decision)}
+  </section>
+  <section class="state-section">
+    <h3 class="subheading">BELIEFS / 有证据的假设</h3>
+    ${beliefsMarkup(decision.belief_state)}
+  </section>
+  <section class="state-section">
+    <h3 class="subheading">NEW MEMORY / 本回合新事件</h3>
+    ${eventMarkup(decision.new_events)}
+  </section>
+`;
+
 const renderTrace = (decision) => {
   const toolSequence = decision.tool.call_ids
     .map((callId, index) => {
@@ -444,6 +554,21 @@ const renderTrace = (decision) => {
   if (decision.tactical_analysis?.schema) {
     trace.push(
       `<div class="trace-item">战术计算：速度 <strong>${escapeHtml(titleCase(decision.tactical_analysis.speed_relation))}</strong>；最佳伤害 ${escapeHtml((decision.tactical_analysis.best_damage_action_ids || []).join(", ") || "—")}；最佳换人 ${escapeHtml((decision.tactical_analysis.best_switch_action_ids || []).join(", ") || "—")}。</div>`
+    );
+  }
+  if (decision.planner.model_calls) {
+    trace.push(
+      `<div class="trace-item">Planner 因 <code>${escapeHtml(decision.plan_trigger || "unknown")}</code> 执行 ${decision.planner.model_calls} 次，耗时 ${decision.planner.elapsed_seconds.toFixed(2)}s，使用 ${decision.planner.usage.total_tokens.toLocaleString()} tokens。</div>`
+    );
+  }
+  for (const error of decision.planner.errors) {
+    trace.push(
+      `<div class="trace-item is-error">Planner: ${escapeHtml(error)}</div>`
+    );
+  }
+  for (const error of decision.enrichment_errors) {
+    trace.push(
+      `<div class="trace-item is-error">Enrichment: ${escapeHtml(error)}</div>`
     );
   }
   if (decision.fallback_used) {
@@ -472,6 +597,7 @@ const renderTrace = (decision) => {
 const panelRenderers = {
   overview: renderOverview,
   actions: renderActions,
+  agent: renderAgent,
   state: renderState,
   trace: renderTrace,
 };

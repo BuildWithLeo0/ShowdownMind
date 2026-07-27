@@ -34,7 +34,7 @@ from showdown_mind.tactics import (
 )
 
 MAX_RATIONALE_CHARACTERS = 240
-POLICY_MODES = ("direct", "tactical-tool")
+POLICY_MODES = ("direct", "tactical-tool", "controlled-agent")
 REASON_CODES = (
     "DAMAGE",
     "ACCURACY",
@@ -48,11 +48,17 @@ REASON_CODES = (
     "FORCED_SWITCH",
     "INFORMATION",
     "WEATHER",
+    "PLAN_ALIGNMENT",
+    "OPPONENT_PREDICTION",
     "OTHER",
 )
 REASON_CODE_ALIASES = {
     "KO": "DAMAGE",
     "KO_PROBABILITY": "DAMAGE",
+    "DEFENSE": "SURVIVAL",
+    "DEFENSIVE": "SURVIVAL",
+    "SWITCH": "TYPE_MATCHUP",
+    "OFFENSE": "DAMAGE",
 }
 
 SYSTEM_PROMPT = """You choose one legal action in a Pokémon Showdown battle.
@@ -91,6 +97,18 @@ class PolicyFailure(RuntimeError):
         tool_names: tuple[str, ...] = (),
         tool_executions: tuple[dict[str, Any], ...] = (),
         tactical_analysis: dict[str, Any] | None = None,
+        new_events: tuple[dict[str, Any], ...] = (),
+        memory: dict[str, Any] | None = None,
+        belief_state: dict[str, Any] | None = None,
+        belief_changes: tuple[dict[str, Any], ...] = (),
+        battle_plan: dict[str, Any] | None = None,
+        plan_update: dict[str, Any] | None = None,
+        plan_trigger: str = "",
+        planner_model_calls: int = 0,
+        planner_usages: tuple[TokenUsage, ...] = (),
+        planner_errors: tuple[str, ...] = (),
+        planner_elapsed_seconds: float = 0.0,
+        enrichment_errors: tuple[str, ...] = (),
     ):
         super().__init__(message)
         self.raw_responses = raw_responses
@@ -107,6 +125,18 @@ class PolicyFailure(RuntimeError):
         self.tool_names = tool_names
         self.tool_executions = tool_executions
         self.tactical_analysis = tactical_analysis or {}
+        self.new_events = new_events
+        self.memory = memory or {}
+        self.belief_state = belief_state or {}
+        self.belief_changes = belief_changes
+        self.battle_plan = battle_plan or {}
+        self.plan_update = plan_update or {}
+        self.plan_trigger = plan_trigger
+        self.planner_model_calls = planner_model_calls
+        self.planner_usages = planner_usages
+        self.planner_errors = planner_errors
+        self.planner_elapsed_seconds = planner_elapsed_seconds
+        self.enrichment_errors = enrichment_errors
 
 
 class SingleCallPolicy:
@@ -718,5 +748,9 @@ def make_policy(
         return SingleCallPolicy(model_client, input_format=input_format)
     if policy_mode == "tactical-tool":
         return TacticalToolPolicy(model_client, input_format=input_format)
+    if policy_mode == "controlled-agent":
+        from showdown_mind.controlled_policy import ControlledAgentPolicy
+
+        return ControlledAgentPolicy(model_client, input_format=input_format)
     choices = ", ".join(POLICY_MODES)
     raise ValueError(f"unknown policy mode {policy_mode!r}; choose one of: {choices}")
